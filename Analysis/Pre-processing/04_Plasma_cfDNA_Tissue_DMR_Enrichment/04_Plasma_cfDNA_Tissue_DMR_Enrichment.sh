@@ -1,2 +1,2 @@
-./04_Array_Comparison.R
-./04_WGBS_Copmarison.R
+./Array_Comparison.R
+./WGBS_Comparison.R
