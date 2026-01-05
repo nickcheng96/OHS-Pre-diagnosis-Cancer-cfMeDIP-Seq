@@ -2,132 +2,123 @@
 library(parallel)
 library(DESeq2)
 
-#####read samples#####
-targets = list('Breast' = sample.info.filt[sample.info.filt$Cancer %in% c('Breast','Control') & sample.info.filt$Sex == 'Female' ,],
-               'Prostate'  = sample.info.filt[sample.info.filt$Cancer %in% c('Prostate','Control') & sample.info.filt$Sex == 'Male' ,])
 
-wkdir='/User/workdirectory/'
-figdir='/User/workdirectory/figures/qc/'
-dir.create(figdir,recursive = T)
-setwd(wkdir)
+#loading sample information file
+sample.info.filt=readRDS('combined.set.samples.RDS')
 
-#####methylation insertts coverage####
-cpg_count.all = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/cpg_sites/cpg_site_positions/window_count/hg38_cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
-blacklist = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/encode.blacklist/hg38-blacklist.v2_window300.RDS')
-
-discovery.set = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/discovery.set.samples.RDS')
-validation.set = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/validation.set.samples.RDS')
-sample.info.filt=readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/combined.set.samples.RDS')
-
+#setting directories
+savedir='/User/workdirectory/'
 rawcountdir='/path/to/raw/counts/'
-setwd(rawcountdir)
 
-#creating count matrix for 300bp windows
-files = list.files(pattern = '.*inserts.1000.all.300.q20.RDS')
-files.combined = files[grepl('combined',files)]
-files.nontopup = files[!gsub('_Ct.*|_combined.*','',files) %in% gsub('_Ct.*|_combined.*','',files.combined) ]
-files = c(files.combined,files.nontopup)
-#file.types='inserts.400.all.300.q20.RDS'
+#reading in genomic annotation files for filtering#
+blacklist = readRDS('hg38-blacklist.v2_window300.RDS')
 
-sample.list = list(Male = discovery.set[discovery.set$Sex == 'Male' & discovery.set$Cancer %in% c('Control','Prostate'),],
-                   Female = discovery.set[discovery.set$Sex == 'Female' & discovery.set$Cancer %in% c('Control','Breast'),],
-                   All = discovery.set)
+#separating discovery and test samples
+sample.list = list(Male = sample.info.filt[sample.info.filt$Sex == 'Male' & sample.info.filt$Cancer %in% c('Control','Prostate'),],
+                   Female = sample.info.filt[sample.info.filt$Sex == 'Female' & sample.info.filt$Cancer %in% c('Control','Breast'),],
+                   All = sample.info.filt)
 
 library(DESeq2)
+#list of raw count files
+setwd(rawcountdir)
 
-#discovery only
-file.types=c('inserts.1000.all.300.q20.RDS','inserts.400.all.300.q20.RDS')
-for (sex in names(sample.list)[c(2,3,1)]) {
-  for (f in file.types) {
-    print(sex)
-    print(f)
-    raw=F
-    targ.samples = sample.list[[sex]]
-    if (raw == T){
-      files = list.files(pattern = paste0('AIX.*',f))
-      
-      files = files[grep(paste(targ.samples$GRP_Id,collapse = '|'),files)]
-      files.list = mclapply(files, function(x) {
-        tmp = data.frame(readRDS(x)[,2],stringsAsFactors = F)
-        colnames(tmp)[1] = gsub('.inserts.*','',x)
-        return(tmp)
-      },mc.cores = 10 )
-      
-      windows =  readRDS(files[1])
-      windows[,1] = gsub('01-','00-',windows[,1])
-      return.df = data.frame(window = windows[,1])
-      
-      file.rows = unlist(sapply(files.list,nrow))
-      file.length = unlist(sapply(files.list,length))
-      
-      files.df = do.call('cbind',files.list[file.length > 0])
-      files.df = cbind(return.df,files.df)
-      remain.files = files[file.length == 0]
-      colnames(files.df) = gsub('_Ct.*|_combined.*|_01_.*','',colnames(files.df))
-      rownames(files.df) = files.df$window
-      files.df = files.df[rowSums(files.df[,-1])>0, ]
-      
-      
-      
-    }
-    
-    files.df=readRDS(paste0('AIX13.discovery.',sex,'all.rawcounts.',f))
-    
-    
-    #checking for mclapply that failed 
-    savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/'
-    setwd(savedir)
-    combined.filt = files.df[,-1]
-    if (nrow(combined.filt) > 1){
-      library(DESeq2)
-      
-      combined.counts1 = combined.filt[rowSums(combined.filt) > 0,]
-      background.windows = rownames(combined.counts1)
-      background.windows = background.windows[!background.windows %in% blacklist$window]
-      #background.windows = background.windows[background.windows %in% cpg_count$window]
-      combined.counts1 = combined.counts1[background.windows,]
-      combined.sample.info.filt = targ.samples[targ.samples$GRP_Id %in% colnames(combined.counts1),]
-      dds <- DESeqDataSetFromMatrix(countData = combined.counts1[,combined.sample.info.filt$GRP_Id],
-                                    colData = combined.sample.info.filt,
-                                    design= ~  group ) #can add gender here but we're only looking at female samples currently
-      #setwd(wkdir)
-      #dds = dds[which(rowMeans(combined.counts[,combined.sample.info.filt$GRP_Id]) != 1),]
-      #nonzero.regions = rownames(dds)
-      dds <- estimateSizeFactors(dds) #estimating size factors for tmm normalization
-      #normalized counts
-      dds.matrix =counts(dds,normalize =T)
-      saveRDS(dds.matrix,paste0('','AIX13.allbg.discovery.',sex,'all.samples.deseq.normcounts.',f))
-      saveRDS(dds,paste0('','AIX13.allbg.discovery.',sex,'all.samples.dds.',f))
-      
-      
-      
-    }
-    
-    
+
+#discovery only (or not)
+discovery.only = T
+
+####loading + normalizing counts for 300bp bin matrix####
+for (sex in names(sample.list))  {
+  #selecting sex (breast or prostate cancer)
+  targ.samples = sample.list[[sex]]
+  
+  #if only selecting discovery set 
+  if (discovery.only == T) {
+    targ.samples = targ.samples[targ.samples$data.partition %in% 'Disovery',]
   }
+  
+  #loading files
+  files = list.files(pattern = 'AIX.*inserts.1000.all.300.q20.RDS',path=rawcountdir)
+  
+  #filtering only for samples of interest
+  files = files[grep(paste(targ.samples$GRP_Id,collapse = '|'),files)]
+  
+  #reading files using mclapply
+  setwd(rawcountdir)
+  files.list = mclapply(files, function(x) {
+    tmp = data.frame(readRDS(x)[,2],stringsAsFactors = F)
+    colnames(tmp)[1] = gsub('.inserts.*','',x)
+    return(tmp)
+  },mc.cores = 10 )
+  
+  #creating dataframe to combine samples into a matrix
+  windows =  readRDS(files[1])
+  windows[,1] = gsub('01-','00-',windows[,1])
+  return.df = data.frame(window = windows[,1])
+  
+  #converting list of counts to dataframe and formatting
+  file.length = unlist(sapply(files.list,length))
+  files.df = do.call('cbind',files.list[file.length > 0])
+  files.df = cbind(return.df,files.df)
+  remain.files = files[file.length == 0]
+  colnames(files.df) = gsub('_Ct.*|_combined.*|_01_.*','',colnames(files.df))
+  rownames(files.df) = files.df$window
+  files.df = files.df[rowSums(files.df[,-1])>0, ]
+  
+  #saving combined raw count file 
+  files.df=saveRDS(files.df, paste0('ohs.',sex,'all.rawcounts.RDS'))
+  
+  #normalizing raw counts using DESeQ2
+  combined.filt = files.df[,-1]
+  #filtering for rows with no signal
+  combined.counts1 = combined.filt[rowSums(combined.filt) > 0,]
+  
+  #filtering out blacklist 300bp windows
+  background.windows = rownames(combined.counts1)
+  background.windows = background.windows[!background.windows %in% blacklist$window]
+  
+  dds <- DESeqDataSetFromMatrix(countData = combined.counts1[background.windows,combined.sample.info.filt$GRP_Id],
+                                colData = combined.sample.info.filt,
+                                design= ~  group ) #can add gender here but we're only looking at female samples currently
+  
+  dds <- estimateSizeFactors(dds) #estimating size factors for tmm normalization
+  
+  #computing normalized counts
+  dds.matrix =counts(dds,normalize =T)
+  
+  #saving normalized counts + deseq object
+  saveRDS(dds.matrix,paste0(savedir,'ohs.',sex,'all.samples.deseq.normcounts.RDS'))
+  saveRDS(dds,paste0(savedir,'ohs.',sex,'all.samples.dds.RDS'))
+  
+  
   
   
 }
 
 
 
-#enhancer/silencers
-marker.list = c('genhancer','silencer')#,'utr3','utr5') #,'ctcfbs','ucre')
+####loading + normalizing counts for silencer/enhancer matrix####
+marker.list = c('genhancer','silencer')
 
-
-#discoveyr set only
-for (marker in marker.list) {
-  for (inserts in c(1000)) {
-    combined.info = discovery.set
-    print(paste0('discovery.',marker))
-    if (raw == T){
-      files = list.files(pattern = paste0('AIX.*',marker,'.*'))
-      targ.files = files[grepl(paste0('inserts.',inserts),files)]
+for (sex in names(sample.list))  {
+  for (marker in marker.list) {
+    for (inserts in c(1000)) {
+      #selecting sex (breast or prostate cancer)
+      targ.samples = sample.list[[sex]]
+      
+      #if only selecting discovery set 
+      if (discovery.only == T) {
+        targ.samples = targ.samples[targ.samples$data.partition %in% 'Disovery',]
+      }
+      
+      #filtering count files for samples of interest
+      files = list.files(pattern = paste0('AIX.*',marker,'.*'),path = rawcountdir)
+      files = files[grepl(paste0('inserts.',inserts),files)]
       targ.samples = paste(combined.info$GRP_Id,collapse='|')
       targ.files = targ.files[grepl(targ.samples, targ.files)]
       
+      #reading in individual raw counts into list
+      setwd(rawcountdir)
       targ.list = lapply(targ.files, function(x){
-        #print(x)
         a = data.frame(readRDS(x)[,2])
         if (gsub('-','_',gsub('\\..*','',targ.files)) %in% sample.info$process.id) {
           colnames(a)[1] = gsub('_Ct.*|_combined.*|_01_.*','',x)
@@ -137,40 +128,47 @@ for (marker in marker.list) {
       } )
       
       
-      
+      #merging list into a dataframe
       targ.df= do.call('cbind',targ.list)
       window= data.frame(window=readRDS(targ.files[1])[,1])
       combined.df = cbind(window,targ.df)
       rownames(combined.df) =combined.df$window
-      saveRDS(combined.df,paste0(wkdir,'regulatory.counts/aix13.discovery.',inserts,'.',marker,'.raw.counts3.RDS'))
+      
+      #saving raw count matrix
+      saveRDS(combined.df,paste0(savedir,'ohs.',inserts,'.',marker,'.raw.counts.RDS'))
+      
+      #normalizing raw counts
+      
+      #filtering for autosomes
+      background = combined.df$window
+      background = background[!grepl('chrX|chrY',background)]
+      
+      #adding window coordinates to rownames
+      rownames(combined.df) = combined.df$window
+      
+      #reading raw counts into deseq
+      dds <- DESeqDataSetFromMatrix(countData = combined.df[background,targ.samples$GRP_Id],
+                                    colData = targ.samples,
+                                    design= ~  group ) 
+
+      #removing regions with no signal
+      dds = dds[which(rowSums(combined.df[background,targ.samples$GRP_Id]) > 0),]
+      dds <- estimateSizeFactors(dds) #estimating size factors for tmm normalization
+      
+      #computing normalized count into a dataframe
+      dds.matrix =counts(dds,normalize =T)
+      
+      #saving fount files
+      saveRDS(dds.matrix,paste0(savedir,'ohs.',inserts,'.',marker,'.norm.counts.RDS'))
+      saveRDS(dds,paste0(savedir,'ohs.',inserts,'.',marker,'.dds.RDS'))
+      
+      
+      
+      
+      
+      
       
     }
-    combined.df = readRDS(paste0(wkdir,'regulatory.counts/aix13.discovery.',inserts,'.',marker,'.raw.counts3.RDS'))
-    print(dim(combined.df))
-    #
-    
-    #adsf
-    background = rownames(sample.matrix)
-    background = background[!grepl('chrX|chrY',background)]
-    sample.info = combined.info[combined.info$GRP_Id %in% colnames(combined.df),]
-    medips.count_df.filt = combined.df[,sample.info$GRP_Id]
-    rownames(medips.count_df.filt) = combined.df$window
-    merged.df.filt = sample.info[sample.info$GRP_Id %in% colnames(medips.count_df.filt),]
-    library(DESeq2)
-    dds <- DESeqDataSetFromMatrix(countData = medips.count_df.filt[background,merged.df.filt$GRP_Id],
-                                  colData = merged.df.filt,
-                                  design= ~  seq.run ) #can add gender here but we're only looking at female samples currently
-    #setwd(wkdir)
-    dds = dds[which(rowSums(medips.count_df.filt[,merged.df.filt$GRP_Id]) > 0),]
-    dds <- estimateSizeFactors(dds) #estimating size factors for tmm normalization
-    dds.matrix =counts(dds,normalize =T)
-    saveRDS(dds.matrix,paste0(wkdir,'regulatory.counts/aix13.discovery.',inserts,'.',marker,'.norm.counts.RDS'))
-    saveRDS(dds,paste0(wkdir,'regulatory.counts/aix13.discovery.',inserts,'.',marker,'.dds.RDS'))
-    
-    
-    
-    
-    
     
     
   }
