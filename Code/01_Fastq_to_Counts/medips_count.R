@@ -18,20 +18,15 @@ dir.create(outdir,recursive = T) #creating output directory in case this is ran 
 
 option_list = list(
   make_option(c("-i", "--bamfile"), type="character", default=NULL, help="input bam file", metavar="character"),
-  make_option(c("-b", "--bamdir"), type="character", default=NULL, help="bam directory", metavar="character"),
   make_option(c("-o", "--outdir"), type="character", default=NULL, help="output directory", metavar="character")
 )
-#bamfile
-#bamdir
-#outdir
 
-basedir <- opt$basedir
 bamfile <- opt$bamfile
 outdir <- paste0(opt$outdir,'/')
 
 
 ### Read GAlignmentPairs ###
-bamfile = file.path(bamdir, bamfile)
+bamfile = file.path(bamfile)
 param = ScanBamParam(flag = scanBamFlag(isDuplicate = NA,
                                         isSecondaryAlignment = FALSE,
                                         isUnmappedQuery = FALSE,
@@ -100,7 +95,7 @@ saveRDS(fragment.qc.information,paste0(outdir,grpid,'.fragment.qc.RDS'))
 
 ### computing counts across 300bp ### 
 #reading in genomic coordinates for 300 bp nonoverlapping tiled bins
-tiles.300 = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/hg38/tiles/hg38.tile.300.RDS') 
+tiles.300 = readRDS('hg38.tile.300.RDS') 
 
 #selecting for autosomal regions
 galp.paired.raw =galp.paired.raw[galp.paired.df$seqnames %in% chr.select,]
@@ -143,7 +138,7 @@ saveRDS(tmp,paste0(outdir,grpid,'.inserts.1000.all.300.q20.RDS'))
 
 
 #enhancer coverage
-genhancer = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/enhancers/genehancer/genhancer.grange.RDS')
+genhancer = readRDS('genhancer.hg38.grange.RDS')
 targ.grange = genhancer
 return.df = NULL
 targ.df =galp.paired.raw.inserts.1000
@@ -162,7 +157,7 @@ rownames(tmp) = tmp$window
 saveRDS(tmp,paste0(outdir,grpid,'.genhancer.inserts.1000.q20.cgifilt.RDS'))
 
 #silencer coverage
-silencers = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/silencers/candidate.silencers.hg38.grange.RDS') #silencers
+silencers = readRDS('candidate.silencers.hg38.grange.RDS') #silencers
 targ.grange = silencers
 return.df = NULL
 targ.df = galp.paired.raw.inserts.1000
