@@ -1,6 +1,7 @@
-./Discovery_set_cfDNA_DMR.R
-./DMR_Volcano.R
-./DMR_Sankey.R
-./DMR_Genomic_element_enrichment.R
-./DMR_Transcript_factor_enrichment.R
-./DMR_Gene_set_overrepresentation.R
+RScript ./Discovery_set_cfDNA_DMR.R
+RScript ./DMR_Volcano.R
+RScript ./DMR_Sankey.R
+RScript ./DMR_Genomic_element_enrichment.R
+RScript ./DMR_Transcript_factor_enrichment.R
+./DMR_Homer.sh
+RScript ./DMR_Gene_set_overrepresentation.R
