@@ -1,20 +1,12 @@
-####loading packages#####
 #!/usr/bin/env Rscript
-#libraries to load (you will need to install DESeq2 and sva)
+####loading packages#####
 library(plyr)
 library(ROCR)
-library(edgeR)
 library(rstatix)
 library(DESeq2)
-library(sva)
 library(matrixTests)
-library(car)
 library(gridExtra)
 library(caret)
-library(ROCR)
-library(gridExtra)
-library(caret)
-library(ROCR)
 library(pROC)
 library(stringr)
 library(parallel)
@@ -22,6 +14,15 @@ library(survival)
 library(ncvreg)
 library(survminer)
 library(RColorBrewer)
+library(cutpointr)
+library(dplyr)
+library(plyr)
+library(ggplot2)
+library(ggh4x)
+library(survcomp)
+library(cenROC)
+
+####functions to be used in analysis####
 auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
   tmp = prediction_table
   tmp = tmp[order(-tmp$methylation_score),]
@@ -31,29 +32,6 @@ auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
   AUC=perf_AUC@y.values[[1]]
   return(AUC)
 }
-tpr.fpr.calc = function(x){
-  tmp1 = x
-  tmp1$f = as.integer(ifelse(tmp1$reported == 'Control', 0, 1))
-  tmp1$f.str = tmp1$reported
-  
-  tmp1 = tmp1[order(-tmp1$methylation_score),]
-  case_no = nrow(tmp1[tmp1$reported!='Control',])
-  control_no = nrow(tmp1[tmp1$reported=='Control',])
-  auc.df =data.frame(matrix(nrow = 0, ncol=3))
-  for(l in 1:nrow(tmp1)) {
-    x = tmp1[1:l,]
-    case_cum = nrow(x[x$reported!='Control',])
-    control_cum = nrow(x[x$reported=='Control',])
-    tpr = case_cum/case_no
-    fpr = control_cum/control_no
-    return.tmp = data.frame(l,tpr,fpr)
-    auc.df = rbind(auc.df, return.tmp)
-  }
-  base = data.frame(l = 0, tpr = 0, fpr = 0)
-  auc.df = rbind(base,auc.df)
-  return(auc.df)
-  #auc.df = auc.df[auc.df$fpr > 0,]
-}
 
 tpr.fpr.calc = function(x){
   tmp1 = x
@@ -79,70 +57,6 @@ tpr.fpr.calc = function(x){
   #auc.df = auc.df[auc.df$fpr > 0,]
 }
 
-group.similarity = function(targ.pcs, sample.information,groups = c('group','filler')) {
-  library(cluster)
-  library(kBET)
-  library(stats)
-  library(scPOP)
-  #LISI
-  sample.information.filt = sample.information[sample.information$GRP_Id %in% rownames(targ.pcs),]
-  
-  lisi.index.tmp = lisi(targ.pcs[sample.information.filt$GRP_Id,],sample.information.filt,groups)
-  lisi.index.tmp = apply(lisi.index.tmp,2, mean)
-  
-  #Silhouette width
-  library(plyr)
-  
-  sl.calc = function(targ.pcs, grouping) {
-    sw.tmp.group.tmp = silhouette(as.numeric(as.factor(grouping)),dist(targ.pcs[sample.information.filt$GRP_Id,]))
-    a = ddply(data.frame(sw.tmp.group.tmp[,-2]),'cluster', numcolwise(mean))
-    return(mean(a[,2]))
-  }
-  
-  k.means.fun = function(targ.pcs, sample.information,l) {
-    kmeans.clusters = kmeans(targ.pcs, length(unique(sample.information[,l])), iter.max = 10, nstart = 2,
-                             algorithm = c("Hartigan-Wong", "Lloyd", "Forgy",
-                                           "MacQueen"), trace=FALSE)
-    kmeans.clusters = data.frame(cluster= kmeans.clusters$cluster)
-    kmeans.clusters$GRP_Id =rownames(kmeans.clusters)
-    kmeans.clusters = merge(kmeans.clusters, sample.information,by='GRP_Id')
-    return.df = ari(kmeans.clusters$cluster, kmeans.clusters[,l])
-    return(return.df)
-  }
-  
-  sl.calc.res= NULL
-  kbet.res = NULL
-  ari.res = NULL
-  for (g in groups){
-    sw.tmp.group = sl.calc(targ.pcs, sample.information.filt[,g])
-    sl.calc.res[g] = sw.tmp.group
-    kbet.group = kBET(targ.pcs, sample.information.filt[,g])$summary$kBET.observed[1]
-    kbet.res[g] = kbet.group
-    ari.tmp.group = k.means.fun(targ.pcs,sample.information.filt ,g)
-    ari.res[g] = ari.tmp.group
-  }
-  
-  
-  #ARI
-  return.df=NULL
-  for (g in groups ) {
-    metrics.results.tmp = data.frame(variable = g, 
-                                     LISI = lisi.index.tmp[g],
-                                     ASW = sl.calc.res[g],
-                                     kBET = kbet.res[g],
-                                     ARI = ari.res[g])
-    return.df = rbind(return.df,metrics.results.tmp)
-  }
-  
-  return(return.df)
-  
-  
-  
-  
-}
-
-
-#coxph model
 all_cause_mortality_CAN<-structure(list(x = c(0, 2.5, 7, 12, 17, 22, 27, 32, 37, 42, 47, 
                                               52, 57, 62, 67, 72, 77, 82, 87, 90), qx = c(0.0047, 2e-04, 1e-04, 
                                                                                           1e-04, 5e-04, 8e-04, 0.001, 0.0011, 0.0013, 0.0015, 0.0023, 0.0036, 
@@ -245,572 +159,6 @@ weightsf.females<-function (matched_samples){
   
   return(weights)
 }
-
-coxph.calling.all = function(fragment.df.ratio.raw.t,merged.df.filt,filler = T) {
-  tmp = cbind(merged.df.filt,fragment.df.ratio.raw.t)
-  # tmp$censorship_time = ifelse(is.na(tmp$diff_in_days) == F, tmp$diff_in_days,as.Date('01/01/2019',format = '%m/%d/%Y')-as.Date(tmp$collection_date,format='%Y-%m-%d'))
-  tmp = tmp[tmp$censorship_time > 0 ,]
-  tmp$event = ifelse(tmp$group %in% c('control','Control'),0,1)
-  windows = colnames(fragment.df.ratio.raw.t)
-  female.weights = weightsf.females(tmp)
-  tmp$TOTAL = tmp$total/1000000
-  return.list= mclapply(windows, function(i) {
-    targ.df= tmp[,c('group','SDC_AGE_CALC','TOTAL','event','censorship_time','sequence.run','filler',i)] #
-    targ.df$methyl = targ.df[,i]
-    if (sum(is.na(targ.df$methyl)) == 0){
-      if (filler == T){
-        test = summary(coxph(Surv(as.numeric(targ.df$censorship_time), targ.df$event) ~ TOTAL+ filler  + methyl,targ.df,weights = female.weights)) #
-        
-      } else {
-        test = summary(coxph(Surv(as.numeric(targ.df$censorship_time), targ.df$event) ~ TOTAL  + methyl,targ.df,weights = female.weights)) #
-        
-      }
-      return.df = data.frame(window =i, pvalue = test$coefficients[nrow(test$coefficients),6], HR =  test$coefficients[nrow(test$coefficients),2],HR.SE = test$coefficients[nrow(test$coefficients),3])
-      return(return.df)
-    }
-    
-    
-  },mc.cores = detectCores()/2)
-  res.df=do.call('rbind',return.list)
-  return(res.df)
-}
-wcx.calling.all = function(fragment.df.ratio.raw.t,merged.df.filt) {
-  tmp = cbind(merged.df.filt,fragment.df.ratio.raw.t)
-  tmp = tmp[tmp$censorship_time > 0,]
-  tmp$event = ifelse(tmp$group %in% c('control','Control'),0,1)
-  windows = colnames(fragment.df.ratio.raw.t)
-  female.weights = weightsf.females(tmp)
-  tmp$TOTAL = tmp$total/1000000
-  
-  wcx.test = mclapply(windows, function(x) {
-    if (is.numeric(tmp[,x]) == T & var(tmp[,x]) > 0) {
-      targ.df = tmp[,c('GRP_Id',x,'group')]
-      colnames(targ.df)[2] = 'targ'
-      res <- wilcox.test(targ ~ group, data = targ.df,
-                         exact = FALSE,conf.int=TRUE)
-      return.df = data.frame(window = x, pvalue = res$p.value,est = res$estimate)
-      return(return.df)
-    }
-    
-  },mc.cores = detectCores()/2)
-  wcx.res = do.call('rbind',wcx.test)
-  
-  return(wcx.res)
-}
-
-
-pca.plot.fillerlabel =function(deseq.matrix,predx.dmrs.sig.hyper,combined.info,dx.time,name,cv.label = T){
-  library(ggfortify)
-  library(RColorBrewer)
-  library(gridExtra)
-  library(ggpubr)
-  
-  
-  diagnosis_time_grouping = function(diagnosis_time) {
-    tmp = ifelse(diagnosis_time > 2920, '8-10', diagnosis_time)
-    tmp = ifelse(diagnosis_time <= 2920, '6-8', tmp)
-    tmp = ifelse(diagnosis_time <= 2190, '4-6', tmp)
-    tmp = ifelse(diagnosis_time <= 1460, '2-4', tmp)
-    tmp = ifelse(diagnosis_time <= 730, '0-2', tmp)
-    tmp[is.na(diagnosis_time)] = 'Control'
-    diagnosis_time_groups = c('Control','0-2','2-4','4-6','6-8','8-10')
-    tmp = factor(tmp, levels = rev(diagnosis_time_groups))
-    return(tmp)
-  }
-  
-  if (cv.label == T & length(predx.dmrs.sig.hyper) >= 3){
-    tmp.info = combined.info[combined.info$GRP_Id  %in% colnames(deseq.matrix),]
-    tmp.info$Diagnosis_Time = diagnosis_time_grouping(tmp.info[,dx.time])
-    predx.dmrs.sig.hypo.filt = predx.dmrs.sig.hyper[predx.dmrs.sig.hyper %in% rownames(deseq.matrix)]
-    pca.obj = prcomp(data.frame(t(deseq.matrix[predx.dmrs.sig.hypo.filt,tmp.info$GRP_Id]),check.names=F))
-    return.df = data.frame(pca.obj$x,check.names=F)
-    return.df = cbind(tmp.info,return.df)
-    pc1 = paste0('PC1 (',100*round(summary(pca.obj)$importance[2,1],digits = 3),'%)')
-    pc2 = paste0('PC2 (',100*round(summary(pca.obj)$importance[2,2],digits = 3),'%)')
-    pc3 = paste0('PC3 (',100*round(summary(pca.obj)$importance[2,3],digits = 3),'%)')
-    
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-2','2-4','4-6','6-8','8-10')
-    plot1 = ggplot(return.df,aes(col = Diagnosis_Time,shape = filler, x= PC1, y= PC2))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+ #+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    plot2 = ggplot(return.df,aes(col = Diagnosis_Time,shape = filler, x= PC1, y= PC3))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+ 
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    plot3=ggplot(return.df,aes(col = Diagnosis_Time,shape = filler, x= PC2, y= PC3))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.dx.time.pca.png')
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 3000,res=200)
-    figure <- ggarrange(plot1, plot2,plot3,
-                        labels = c(""),
-                        ncol = 3, nrow = 1
-                        # heights = c(0.3, 0.5),
-                        # widths = c(1.5,0.7)
-    )
-    print(figure)
-    dev.off()
-    plot4 = autoplot(pca.obj, data = tmp.info, col = 'Diagnosis_Time',shape = 'filler',size = 3,alpha = 0.8,x=2,y=3) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    png(paste0(name,'.dxtime.pca.labs.png'),height = 1000, width = 3000,res=200)
-    print(plot4)
-    dev.off()
-    
-    
-    n <- length(unique(tmp.info$sequence.run))
-    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
-    
-    plot1 = ggplot(return.df,aes(shape = filler,col = sequence.run, x= PC1, y= PC2))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#      theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    plot2 =ggplot(return.df,aes(shape = filler,col = sequence.run, x= PC1, y= PC3))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#  
-      theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    plot3 =ggplot(return.df,aes(shape = filler,col = sequence.run, x= PC2, y= PC3))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#  
-      theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.batch.pca.png')
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 3000,res=200)
-    figure <- ggarrange(plot1, plot2,plot3,
-                        labels = c(""),
-                        ncol = 3, nrow = 1
-                        # heights = c(0.3, 0.5),
-                        # widths = c(1.5,0.7)
-    )
-    print(figure)
-    dev.off()
-    
-    plot3 = autoplot(pca.obj, data = tmp.info, col = 'sequence.run',shape = 'filler',size = 3,alpha = 0.8,x=2,y=3) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    png(paste0(name,'.batch.pca.labs.png'),height = 1000, width = 3000,res=200)
-    print(plot3)
-    dev.off()
-    
-    
-    n <- length(unique(tmp.info$filler))
-    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
-    
-    plot1 = ggplot(return.df,aes(col = filler,shape = filler, x= PC1, y= PC2))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#  
-      theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    plot2 =ggplot(return.df,aes(col = filler,shape = filler, x= PC1, y= PC3))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#        theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    plot3 = ggplot(return.df,aes(col = filler,shape = filler, x= PC2, y= PC3))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#        theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.filler.pca.png')
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 3000,res=200)
-    figure <- ggarrange(plot1, plot2,plot3,
-                        labels = c(""),
-                        ncol = 3, nrow = 1
-                        # heights = c(0.3, 0.5),
-                        # widths = c(1.5,0.7)
-    )
-    print(figure)
-    dev.off()
-    
-    plot3 = autoplot(pca.obj, data = tmp.info, col = 'filler',shape = 'filler',size = 3,alpha = 0.8,x=2,y=3) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    png(paste0(name,'.filler.pca.labs.png'),height = 1000, width = 3000,res=200)
-    print(plot3)
-    dev.off()
-    
-  } else {
-    tmp.info = combined.info[combined.info$GRP_Id  %in% colnames(deseq.matrix),]
-    tmp.info$Diagnosis_Time = diagnosis_time_grouping(tmp.info[,dx.time])
-    predx.dmrs.sig.hypo.filt = predx.dmrs.sig.hyper[predx.dmrs.sig.hyper %in% rownames(deseq.matrix)]
-    pca.obj = prcomp(data.frame(t(deseq.matrix[predx.dmrs.sig.hypo.filt,tmp.info$GRP_Id]),check.names=F),scale=T)
-    return.df = data.frame(pca.obj$x,check.names=F)
-    pc1 = paste0('PC1 (',100*round(summary(pca.obj)$importance[2,1],digits = 3),'%)')
-    pc2 = paste0('PC2 (',100*round(summary(pca.obj)$importance[2,2],digits = 3),'%)')
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-2','2-4','4-6','6-8','8-10')
-    plot1 = ggplot(return.df,aes(col = Diagnosis_Time,shape = filler, x= PC1, y= PC2))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+ stat_ellipse(geom = "polygon", aes(fill = after_scale(alpha(colour, 0))))+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.dx.time.pca.png')
-    # title=paste0(figdir,title)
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 1000,res=200)
-    print(plot1)
-    dev.off()
-    
-    
-    
-    n <- length(unique(tmp.info$sequence.run))
-    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
-    
-    plot1 = ggplot(return.df,aes(col = sequence.run,shape = filler, x= PC1, y= PC2))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    
-    title=paste0(name,'.batch.pca.png')
-    # title=paste0(figdir,title)
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 1000,res=200)
-    print(plot1)
-    dev.off()
-    
-    
-    
-    n <- length(unique(tmp.info$filler))
-    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
-    
-    plot1 =  ggplot(return.df,aes(col = filler,shape = filler, x= PC1, y= PC2))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    title=paste0(name,'.filler.pca.png')
-    # title=paste0(figdir,title)
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 1000,res=200)
-    print(plot1)
-    dev.off()
-    
-    
-    
-    
-  }
-  
-  return(return.df)
-}
-pca.plot.fillerlabel.project =function(deseq.matrix,predx.dmrs.sig.hyper,combined.info,dx.time,name,cv.label = T,filler){
-  library(ggfortify)
-  library(gridExtra)
-  library(ggpubr)
-  library(ggplot2)
-  
-  diagnosis_time_grouping = function(diagnosis_time) {
-    tmp = ifelse(diagnosis_time > 2920, '8-10', diagnosis_time)
-    tmp = ifelse(diagnosis_time <= 2920, '6-8', tmp)
-    tmp = ifelse(diagnosis_time <= 2190, '4-6', tmp)
-    tmp = ifelse(diagnosis_time <= 1460, '2-4', tmp)
-    tmp = ifelse(diagnosis_time <= 730, '0-2', tmp)
-    tmp[is.na(diagnosis_time)] = 'Control'
-    diagnosis_time_groups = c('Control','0-2','2-4','4-6','6-8','8-10')
-    tmp = factor(tmp, levels = rev(diagnosis_time_groups))
-    return(tmp)
-  }
-  
-  if (cv.label == T){
-    tmp.info = combined.info[combined.info$GRP_Id  %in% colnames(deseq.matrix),]
-    tmp.info$Diagnosis_Time = diagnosis_time_grouping(tmp.info[,dx.time])
-    predx.dmrs.sig.hypo.filt = predx.dmrs.sig.hyper[predx.dmrs.sig.hyper %in% rownames(deseq.matrix)]
-    pca.obj = prcomp(data.frame(t(deseq.matrix[predx.dmrs.sig.hypo.filt,tmp.info[tmp.info$GRP_Id %in% train.set$GRP_Id,'GRP_Id']]),check.names=F))
-    
-    # project new data onto the PCA space
-    pca.obj1 = scale(t(deseq.matrix[predx.dmrs.sig.hypo.filt,tmp.info[tmp.info$GRP_Id %in% test.set$GRP_Id,'GRP_Id']]), pca.obj$center, pca.obj$scale) %*% pca.obj$rotation 
-    
-    return.df = data.frame(pca.obj$x,check.names=F)
-    return.df1 = data.frame(pca.obj1,check.names=F)
-    pca.plot = rbind(return.df,return.df1)
-    pca.plot$GRP_Id = rownames(pca.plot)
-    pca.plot = merge(pca.plot, tmp.info,by='GRP_Id')
-    
-    pc1 = paste0('PC1 (',100*round(summary(pca.obj)$importance[2,1],digits = 3),'%)')
-    pc2 = paste0('PC2 (',100*round(summary(pca.obj)$importance[2,2],digits = 3),'%)')
-    pc3 = paste0('PC3 (',100*round(summary(pca.obj)$importance[2,3],digits = 3),'%)')
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-2','2-4','4-6','6-8','8-10')
-    plot1 = ggplot(pca.plot, aes(x = PC1, y = PC2, col = Diagnosis_Time,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    plot2 = ggplot(pca.plot, aes(x = PC1, y = PC3, col = Diagnosis_Time,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    plot3 = ggplot(pca.plot, aes(x = PC2, y = PC3, col = Diagnosis_Time,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.dx.time.pca.png')
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 3000,res=200)
-    figure <- ggarrange(plot1, plot2,plot3,
-                        labels = c(""),
-                        ncol = 3, nrow = 1
-                        # heights = c(0.3, 0.5),
-                        # widths = c(1.5,0.7)
-    )
-    print(figure)
-    dev.off()
-    plot4 = ggplot(pca.plot, aes(x = PC1, y = PC2, col = Diagnosis_Time,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = diagnosis_time_colors1)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    png(paste0(name,'.dxtime.pca.labs.png'),height = 1000, width = 3000,res=200)
-    print(plot4)
-    dev.off()
-    
-    
-    n <- length(unique(tmp.info$sequence.run))
-    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
-    
-    plot1 = ggplot(pca.plot, aes(x = PC1, y = PC2, col = sequence.run,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    plot2 = ggplot(pca.plot, aes(x = PC2, y = PC3, col = sequence.run,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    plot3 = ggplot(pca.plot, aes(x = PC1, y = PC3, col = sequence.run,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.batch.pca.png')
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 3000,res=200)
-    figure <- ggarrange(plot1, plot2,plot3,
-                        labels = c(""),
-                        ncol = 3, nrow = 1
-                        # heights = c(0.3, 0.5),
-                        # widths = c(1.5,0.7)
-    )
-    print(figure)
-    dev.off()
-    
-    plot3 = ggplot(pca.plot, aes(x = PC1, y = PC2, col = sequence.run,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    png(paste0(name,'.batch.pca.labs.png'),height = 1000, width = 3000,res=200)
-    print(plot3)
-    dev.off()
-    
-    
-    n <- length(unique(tmp.info$filler))
-    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
-    
-    plot1 = ggplot(pca.plot, aes(x = PC1, y = PC2, col = filler,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc2)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    plot2 = ggplot(pca.plot, aes(x = PC1, y = PC3, col = filler,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc1) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    
-    plot3 = ggplot(pca.plot, aes(x = PC2, y = PC3, col = filler,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    
-    title=paste0(name,'.filler.pca.png')
-    # title=paste0(figdir,title)
-    png(title,height = 1000, width = 3000,res=200)
-    figure <- ggarrange(plot1, plot2,plot3,
-                        labels = c(""),
-                        ncol = 3, nrow = 1
-                        # heights = c(0.3, 0.5),
-                        # widths = c(1.5,0.7)
-    )
-    print(figure)
-    dev.off()
-    
-    plot3 = ggplot(pca.plot, aes(x = PC1, y = PC2, col = filler,shape = filler))+ geom_point(size = 3,alpha = 0.8) + 
-      scale_color_manual(values = col_vector)+#+ ggtitle(title) +
-      theme_bw()+
-      scale_shape_manual(values = c("Methylated" = 19,"Unmethylated" = 17))+
-      theme(text = element_text(size=12),
-            axis.text=element_text(size=12, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=7)) + xlab(pc2) + ylab(pc3)+ ggtitle(paste0( ' Features: ',length(predx.dmrs.sig.hyper)))
-    png(paste0(name,'.filler.pca.labs.png'),height = 1000, width = 3000,res=200)
-    print(plot3)
-    dev.off()
-    
-  } 
-  
-  return(return.df)
-}
-
-
-########sample splitting######
-
-merged.df = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/AIX3/metadata/AIX13.sample.information.RDS')
-merged.df = merged.df[order(merged.df$diff_in_days),]
-merged.df = merged.df[!duplicated(merged.df$GRP_Id),]
-merged.df[is.na(merged.df$topup.order),'topup.order'] = 0
-merged.df$topup.order = ifelse(grepl('combined',merged.df$GRP_Id) == T,0,merged.df$topup.order)
-
-topup.combined = merged.df[grepl('combined',merged.df$GRP_Id) == T,]
-merged.df.filt = merged.df[!merged.df$GRP_Id.sample %in% topup.combined$GRP_Id.sample,]
-merged.df.filt = rbind(merged.df.filt,topup.combined)
-
-
-outliers1=readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/hg38.counts/outliers.pca.background.RDS')
-#outliers = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/hg38.counts/outliers.pca.dmrs.RDS')
-outliers2=readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/hg38.counts/outliers.conditions.RDS')
-outliers=readRDS(paste0('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/hg38.counts//aix13.brca.exclude.RDS'))
-
-merged.df.filt = merged.df.filt[which(merged.df.filt$diff_in_days > 0 | merged.df.filt$Diagnosis_Time == 'Control')  ,]
-merged.df.filt = merged.df.filt[!merged.df.filt$GRP_Id.sample %in% c(outliers),] #outliers
-
-merged.df.filt = merged.df.filt[-which(merged.df.filt$F1_DIS_CANCER_EVER == 1 & merged.df.filt$group %in% c('control','Control')),]
-merged.df.filt = merged.df.filt[which(merged.df.filt$enrichment.score.relH > 2.4 & merged.df.filt$THALIANA_BETA > 0.95 & merged.df.filt$total > 5000000 & merged.df.filt$maxTruCor > 0.6 & merged.df.filt$numberReadsWOCG/(merged.df.filt$numberReadsWOCG+merged.df.filt$numberReadsCG) > 0.15),]
-
-merged.df.all = merged.df.filt[merged.df.filt$Cancer %in% c('Control','Breast'),]
-merged.df.all = merged.df.all#[merged.df.all$Sex == 'Female',]
-merged.df.all = merged.df.all[!merged.df.all$GRP_Id %in% 'AIX_0030',]
-#merged.df.all = merged.df.all[merged.df.all$Cancer == 'Control' | merged.df.all$diff_in_days < 365*5,]
-
 weightsf.males<-function (matched_samples){
   matched_samples_temp<- matched_samples[matched_samples$censorship_time > 0 | matched_samples$group %in% c('control','Control'),]#[na.omit(match(matched_samples$GRP_Id ,ids)),]
   latest.linkage=  as.Date('2019-01-01',format= '%Y-%m-%d')
@@ -827,434 +175,121 @@ weightsf.males<-function (matched_samples){
   return(weights)
 }
 
-
-predir=paste0(savedir,'/predictions/')
-figdir=paste0(savedir,'figures/')
-dir.create(predir,recursive = T)
-dir.create(figdir,recursive = T)
-
-discovery.set
-
 ####results analysis####
-library(cutpointr)
-library(dplyr)
-library(plyr)
-library(ggplot2)
-library(ggh4x)
-library(plyr)
-library(ROCR)
+sample.info = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/discovery.set3.samples.RDS') #upload
 
+wkdir='/wkdir/'
+marker.list = c('silencer')
 
-#####methylation dmr performance#####
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.select/predictions/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.select/predictions.updated/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.select1/predictions1/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.validation.split/predictions/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.validation.split1/predictions/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.check/predictions/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.validation.split.8020/predictions'
-#savedir='//.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.validation.80.male.controls/predictions/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/thesis/brca.cv10/preupdate.opt/predictions/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.insert.select1/predictions1/'
-#savedir='//.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/thesis/figures/chapter3/breast.dmrs.cv.norm.all/predictions.hyper/'
-#savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/thesis/figures//chapter3/breast.dmrs.cv.norm.brcaonly//predictions.hyper/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/'
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/brca/regulatory.300/predictions.basefilt.hyper/'
-
-
-####updated####
-library(DESeq2)
-#matrix/proportions comparison#
-#wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/regulatory.counts/'
-marker.list = c('genhancer','silencer','utr3','utr5','TSS.2','Bin300')
-marker.list= c('DNA\ Repeat','Alu','L1','LINE','LTR','genhancer','silencer')
-marker.list = paste0(marker.list,'.1000')
-#marker.list = c('Bin300.400','Bin300.1000')
-marker.list='Bin300.combined.matrix.400'
-marker.list = c('Bin300.combined.matrix.400','genhancer.1000','silencer.1000','TSS.2.400')
-#marker.list = c('genhancer','silencer','TSS.2','Bin300')#,'ctcfbs') #ctcfbs #paste0(wkdir,'aix13.combined.',inserts,'.',marker,'.norm.counts.RDS')
-validation.samples = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/qc.filt.validation.samples.updated.RDS')
-sample.info = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/discovery.set3.samples.RDS')
-
-#validation.samples = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/qc.filt.validation.samples.updated.thesis.RDS')
-#wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/prostate.cancer.cv/regulatory.regions.v5/'
-pno=1
-#wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v10.ageadjusted/'
-#wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v10/'
-#wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v6/'
-wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v10/'
-wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v10.newsplit7/'
-discovery.set = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/discovery.set3.samples.RDS')
-marker.list = c('silencer.1000','genhancer.1000')[1]
-marker.list = c('Bin300.combined.matrix.1000')
-marker.list = c('Bin300.combined.matrix.ntotalTB.1000')#,'Bin300.combined.matrix.ntotal.1000')#
-marker.list = c('Bin300.combined.matrix.ntotalTB.1000','Bin300.combined.matrix.femaleall.ntotalTB.1000')
-marker.list= c('genhancer.1000.ntotalTB.femalenorm.v2','genhancer.1000.ntotal.femalenorm.v2','genhancer.1000.ntotal.allnorm.v2','genhancer.1000.ntotalTB.allnorm.v2')
-marker.list = c('silencer.1000.ntotalTB.allnorm.v')
-#marker.list = c('silencer.1000.ntotalTB.allnorm.v3','genhancer.1000.ntotalTB.allnorm.v3')#'genhancer.1000.ntotalTB.femalenorm.v3',
-
-marker.list = c('genhancer.1000.ntotalTB.allnorm.v1')#'genhancer.1000.ntotalTB.femalenorm.v3',
-#marker.list = c('Bin300.combined.matrix.femaleall.ntotalTB.1000','Bin300.combined.matrix.ntotalTB.1000')
-#dir.list = c('base.abs','base.annotfilt1.hyper','base.annotfilt.hyper','base.hyper','bm1.abs','bm1.hyper','hyper')
-for (pno in 1){
+median.perf.list = list()
+mean.perf.list = list()
+for (m in marker.list){
+  print(m)
   
-  median.perf.list = list()
-  mean.perf.list = list()
-  for (m in marker.list){
-    print(m)
-    # validation.train= validation.samples[validation.samples$fold != pno,]
-    # validation.test =  validation.samples[validation.samples$fold == pno,]
-    directions = c('covar.bm1.abs','covar.base.abs')#,'abs','hypo')
-    directions = c('test.hyper')#,'abs','hypo')
-    directions = c('bm1.final.abs')#,'abs','hypo')
-    directions='base.annotfilt1.hyper'
-    directions = c('base.abs','base.annotfilt1.hyper','base.annotfilt.hyper','base.hyper','bm1.abs','bm1.hyper','hyper')
-    directions='base.basefilt1.hyper'
-    directions = paste0(rep(c('abs','hyper'),3),rep(c('.None','.filler','.filler.total'),2))
-    directions = c('abs.filler','abs.total','abs.filler.total','hyper.filler','hyper.total','hyper.filler.total')
-    directions = c('abs.filler','abs.total','abs.filler.total','hyper.filler','hyper.total','hyper.filler.total')
-    directions = list.files(pattern='predictionsbm1.*|predictionsft.*',path =paste0(wkdir,m,'/'))
-    directions = list.files(pattern='predictionsft.*0.45|predictionsft.*0|predictionsft.*0.1',path =paste0(wkdir,m,'/'))
-    #directions = list.files(pattern='predictionsft..*|predictionsftcpg5..*',path =paste0(wkdir,m,'/'))
-    directions = list.files(pattern='predictionsu6.all.*|predictionsu6.reg.*',path =paste0(wkdir,m,'/'))
-    directions = list.files(pattern='predictions.bm1.*',path =paste0(wkdir,m,'/'))
-    
-    
-    if (length(directions) > 0) {
-      pred.df.all = NULL
-      for (dir in directions) {
-        print(dir)
-        savedir=paste0(wkdir,'/',m,'/',dir,'/')
-        if(file.exists(savedir) == T) { 
-          setwd(savedir)
-          pred.files = list.files(pattern='.*predictions.RDS')
-          if (length(pred.files) > 1) {
-            pred.list =mclapply(pred.files,function(x) {
-              tmp = readRDS(x)
-              tmp$feature = m
-              if (sum(grepl('filler',dir)) == 1) {
-                tmp = tmp[tmp$covariate == 'filler',]
-              } else if (sum(grepl('None',dir)) == 1) {
-                tmp = tmp[tmp$covariate == 'None',]
-                
-              }
-              if (sum(grepl('covariate',colnames(tmp))) == 0) {tmp$covariate= 'None'}
-              
-              if (sum(grepl('fc',colnames(tmp))) == 0) {tmp$fc= 0.25}
-              tmp$dir = dir
-              tmp=tmp[tmp$GRP_Id %in% discovery.set$GRP_Id,]
-              return(tmp)
-              
-              
-            },mc.cores=5 )
-            #pred.df.all=do.call('rbind',pred.list)[,c('GRP_Id','reported','methylation_score','model','feature','test','n.features','filter','fc')]
-            pred.df.all.tmp=do.call('rbind',pred.list)
-            pred.df.all.tmp$direction = dir
-            feature.size.count = data.frame(table(pred.df.all.tmp$n.features),stringsAsFactors = F)
-            n.base = max(feature.size.count$Freq)
-            #feature.sizes= c(seq(25,200,25),seq(200,1000,100))
-            #low.freq = feature.size.count[feature.size.count$Freq < n.base*0.15  | !feature.size.count$Var1 %in%  feature.sizes,]
+  directions = list.files(pattern='predictions.*',path =paste0(wkdir,m,'/'))
+  
+  if (length(directions) > 0) {
+    pred.df.all = NULL
+    for (dir in directions) {
+      print(dir)
+      savedir=paste0(wkdir,'/',m,'/',dir,'/')
+      if(file.exists(savedir) == T) { 
+        setwd(savedir)
+        pred.files = list.files(pattern='.*predictions.RDS')
+        if (length(pred.files) > 1) {
+          pred.list =mclapply(pred.files,function(x) {
+            tmp = readRDS(x)
+            tmp$feature = m
+            tmp$covariate = 'none'
+            tmp$fc= 0.25
+            tmp$direction = dir
+            return(tmp)
             
-            #pred.df.all.tmp$n.features = ifelse(pred.df.all.tmp$n.features %in% feature.sizes,  pred.df.all.tmp$n.features, 1100)
-            pred.df.all.tmp$GRP_Id = gsub('_combined.*','',pred.df.all.tmp$GRP_Id)
-            pred.df.all =rbind(pred.df.all, unique(pred.df.all.tmp))
             
-          }
+          },mc.cores=5 )
+          pred.df.all.tmp=do.call('rbind',pred.list)
+          feature.size.count = data.frame(table(pred.df.all.tmp$n.features),stringsAsFactors = F)
+          pred.df.all =rbind(pred.df.all, unique(pred.df.all.tmp))
           
         }
         
       }
-      #pred.df.all$feature = pred.df.all$covariate#m
-      pred.df.all$freq = 1
-      #pred.df.all = pred.df.all[pred.df.all$seed %in% c(1:10),]
-      #pred.df.all$covariate = 'None'
-      pred.df.all.freq =ddply(pred.df.all[,c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','freq','covariate','dir','fc')],
-                              c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc'),
-                              numcolwise(sum))
-      
-      
-      pred.df.collapse.mean = ddply(pred.df.all[,c('GRP_Id','reported','methylation_score','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc')],
-                                    c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc'),
-                                    numcolwise(mean))
-      pred.df.collapse.mean =merge(pred.df.collapse.mean,pred.df.all.freq,by=c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc'))
-      # pred.df.collapse.mean = pred.df.collapse.mean[pred.df.collapse.mean$freq >= 25,]
-      if(max(pred.df.collapse.mean$freq) > 100) {
-        print('exceed')
-        stop()
-      }
-      #pred.df.collapse.median$validation = ifelse(pred.df.collapse.median$GRP_Id %in% validation.train$GRP_Id,'Discovery','Validation')
-      mean.perf.list[[length(mean.perf.list)+1]] = pred.df.collapse.mean
       
     }
+    pred.df.all$freq = 1
+    #computing cross-validated classification score by averaging performance across CV repeats grouped by model, tuning paramters and feature numbers
+    pred.df.all.freq =ddply(pred.df.all[,c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','freq','covariate','dir','fc')],
+                            c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc'),
+                            numcolwise(sum))
+    
+    
+    pred.df.collapse.mean = ddply(pred.df.all[,c('GRP_Id','reported','methylation_score','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc')],
+                                  c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc'),
+                                  numcolwise(mean))
+    
+    pred.df.collapse.mean =merge(pred.df.collapse.mean,pred.df.all.freq,by=c('GRP_Id','reported','model','feature','test','n.features','mat','direction','comparison','covariate','dir','fc'))
     
   }
-  
-  figdir = paste0(wkdir,'/cv.figures.all.cancer/')
-  figdir = paste0(wkdir,'/cv.figures.all.cancer.covar/') #manuscript
-  figdir = paste0(wkdir,'/cv.figures.prad.final/')
-  figdir = paste0(wkdir,'/cv.figures.brca.300assess1/')
-  dir.create(figdir,recursive = T)
-  perfdir= paste0(wkdir,'/')
-  discovery.female = discovery.set[discovery.set$Sex =='Female',]
-  mean.perf.df = do.call('rbind',mean.perf.list)
-  perf.list = list('mean.cv'= mean.perf.df)
-  
-  for (p in names(perf.list)) {
-    library(ggh4x)
-    targ.perf = perf.list[[p]]
-    targ.perf = targ.perf#[targ.perf$GRP_Id %in% discovery.female$GRP_Id,]#[targ.perf$filler == 'All',] #[!targ.perf$feature %in% c('fraglengths.v1.tiles.100kb','fraglengths.v2.tiles.100kb','fraglengths.v3.tiles.100kb'),]
-    #targ.perf$feature = 'Methylation'
-    c('model','feature','test','n.features','mat','direction','comparison')
-    targ.perf.list = split(targ.perf, targ.perf[,c('model','feature','test','n.features','mat','direction','comparison','covariate','fc')])
-    targ.perf.list = targ.perf.list[sapply(targ.perf.list,nrow)>0 ]
-    targ.perf.list =lapply(targ.perf.list, function(x) {
-      tmp = x#[x$GRP_Id %in% sample.splits$GRP_Id,]
-      tmp$All = auc_calc(tmp,c('Control','Cancer'))
-      concordance_calc = function(tmp,sample.info){
-        x = merge(tmp,sample.info)
-        x$event=ifelse(x$reported =='Cancer',1,0)
-        x$reported.surv = ifelse(x$reported == 'Cancer',1,0)
-        library(survcomp)
-        #male.weights= weightsf.females(x)
-        
-        ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE)#weights
-        return(ci$c.index)
-      }
-      tmp$Concordance = concordance_calc(tmp,sample.info)
-      
-      # tmp1 = tmp[tmp$GRP_Id %in% aix1.samples$GRP_Id,]
-      # tmp$UFiller =  auc_calc(tmp1,c('Control','Cancer'))
-      # tmp1 = tmp[tmp$GRP_Id %in% aix3.samples$GRP_Id,]
-      # tmp$MFiller =  auc_calc(tmp1,c('Control','Cancer'))
-      return(tmp)
-    } )
-    
-    targ.perf.all=do.call('rbind',targ.perf.list)
-    targ.perf.all = targ.perf.all[order(-targ.perf.all$All),]
-    rownames(targ.perf.all) = c(1:nrow(targ.perf.all))
-    a1=targ.perf.all[targ.perf.all$GRP_Id == 'AIX_0011',]
-    a=targ.perf.all[targ.perf.all$GRP_Id == 'AIX_0010',]
-    #,'Methylated','Unmethylated'
-    #
-    
-    afdf
-    
-    
-    #saveRDS(targ.perf.all,paste0(perfdir,p,'.overall.performance.RDS'))
-    #saveRDS(targ.perf.all,paste0(perfdir,p,'.select.overall.performance.RDS'))
-    #saveRDS(targ.perf.all,paste0(perfdir,p,'.brca.300.performance.newsplit.RDS'))
-    #saveRDS(targ.perf.all,paste0(perfdir,p,'.genhancer.performance.newsplit.hr.75.RDS'))
-    saveRDS(targ.perf.all,paste0(perfdir,p,'.genhancer.top.performance.RDS'))
-    #saveRDS(targ.perf.all,paste0(perfdir,p,'.prad.silencer.performance.RDS'))
-    #saveRDS(targ.perf.all,paste0(perfdir,p,'.topprad.silencer.performance.RDS'))
-    
-    #targ.perf.all = readRDS(paste0(perfdir,p,'.overall.performance.RDS'))
-    print(paste0(perfdir,p,'.overall.performance.RDS'))
-    for (comp in c('Breast','Prostate') ) {
-      for (dir in directions) {#'base.abs','bm1.abs''background.annotation','background.autosome','background.pbl'
-        # targ.perf.all$test = ifelse(targ.perf.all$test %in% c('cph','coxph'),'Cox Regression','Wilcoxon Test')
-        targ.perf.all.filt = targ.perf.all[targ.perf.all$direction == dir & targ.perf.all$comparison == comp ,]
-        if (nrow(targ.perf.all.filt) > 0) {
-          targ.perf.all.melt = reshape2::melt(targ.perf.all.filt,colnames(targ.perf.all.filt)[!colnames(targ.perf.all.filt) %in% c('All','UFiller','MFiller')])
-          
-          plot1 = ggplot(targ.perf.all.melt,aes(x = n.features, y = value,color = model)) + geom_point() +
-            #scale_color_manual(values = group_col)+#+ ggtitle(title) +
-            # scale_color_manual(values=c('rf' ='#247BA0','logreg'='#B8336A'))+
-            theme_bw()+
-            #geom_line()+
-            
-            scale_y_continuous(limits = c(0,1))+
-            facet_grid2(covariate ~ mat)+
-            theme(text = element_text(size=12),
-                  axis.text=element_text(size=12, face = "bold"),
-                  axis.title=element_text(size=14,face="bold"),
-                  legend.position = "right",
-                  axis.text.x=element_text(angle=90,vjust=0.5,hjust=1))+
-            guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-            xlab('Feature Type') + ylab('CV AUROC')
-          
-          
-          png(paste0(figdir,p,'.performance.auroc.',dir,'.',comp,'.methyl.png'),height=2000,width = 3000,res = 200)
-          print(plot1)
-          dev.off()
-          plot1 = ggplot(targ.perf.all.melt,aes(x = n.features, y = Concordance,color = model)) + geom_point() +
-            #scale_color_manual(values = group_col)+#+ ggtitle(title) +
-            #scale_color_manual(values=c('rf' ='#247BA0','logreg'='#B8336A','entropy' ='#3DDC97'))+
-            theme_bw()+
-            #geom_line()+
-            scale_y_continuous(limits = c(0,1))+
-            facet_grid2(covariate ~ mat)+
-            theme(text = element_text(size=12),
-                  axis.text=element_text(size=12, face = "bold"),
-                  axis.title=element_text(size=14,face="bold"),
-                  legend.position = "right",
-                  axis.text.x=element_text(angle=90,vjust=0.5,hjust=1))+
-            guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-            xlab('Feature Type') + ylab('CV Concordance Index')
-          
-          png(paste0(figdir,p,'.performance.ci.',dir,'.',comp,'.methyl.png'),height=2000,width = 3000,res = 200)
-          print(plot1)
-          dev.off()
-          
-          
-        }#[targ.perf.all$validation == 'Validation',]#[targ.perf.all$filter == filter,]
-        
-        
-      }
-      
-      
-    }
-    
-    #other covars
-    oc = F
-    if (oc == T) {
-      for (comp in c('Breast','Prostate')[1] ) {
-        for (dir in directions) {#'background.annotation','background.autosome','background.pbl'
-          # targ.perf.all$test = ifelse(targ.perf.all$test %in% c('cph','coxph'),'Cox Regression','Wilcoxon Test')
-          targ.perf.all.filt = targ.perf.all[targ.perf.all$direction == dir & targ.perf.all$comparison == comp,]
-          if (nrow(targ.perf.all.filt) > 0) {
-            targ.perf.all.melt = reshape2::melt(targ.perf.all.filt,colnames(targ.perf.all.filt)[!colnames(targ.perf.all.filt) %in% c('All','UFiller','MFiller')])
-            sadf
-            plot1 = ggplot(targ.perf.all.melt,aes(x = n.features, y = value,color = model)) + geom_point() +
-              #scale_color_manual(values = group_col)+#+ ggtitle(title) +
-              # scale_color_manual(values=c('rf' ='#247BA0','logreg'='#B8336A'))+
-              theme_bw()+
-              #geom_line()+
-              
-              scale_y_continuous(limits = c(0,1))+
-              facet_grid2(covariate ~ mat)+
-              theme(text = element_text(size=12),
-                    axis.text=element_text(size=12, face = "bold"),
-                    axis.title=element_text(size=14,face="bold"),
-                    legend.position = "right",
-                    axis.text.x=element_text(angle=90,vjust=0.5,hjust=1))+
-              guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-              xlab('Feature Type') + ylab('CV AUROC')
-            
-            
-            png(paste0(figdir,p,'.performance.auroc.',dir,'.',comp,'.covaradjust.methyl.png'),height=2000,width = 3000,res = 200)
-            print(plot1)
-            dev.off()
-            plot1 = ggplot(targ.perf.all.melt,aes(x = n.features, y = Concordance,color = model)) + geom_point() +
-              #scale_color_manual(values = group_col)+#+ ggtitle(title) +
-              #scale_color_manual(values=c('rf' ='#247BA0','logreg'='#B8336A','entropy' ='#3DDC97'))+
-              theme_bw()+
-              #geom_line()+
-              scale_y_continuous(limits = c(0,1))+
-              facet_grid2(covariate ~ mat)+
-              theme(text = element_text(size=12),
-                    axis.text=element_text(size=12, face = "bold"),
-                    axis.title=element_text(size=14,face="bold"),
-                    legend.position = "right",
-                    axis.text.x=element_text(angle=90,vjust=0.5,hjust=1))+
-              guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-              xlab('Feature Type') + ylab('CV Concordance Index')
-            
-            png(paste0(figdir,p,'.performance.ci.',dir,'.',comp,'.covaradjust.methyl.png'),height=2000,width = 3000,res = 200)
-            print(plot1)
-            dev.off()
-            
-            
-          }#[targ.perf.all$validation == 'Validation',]#[targ.perf.all$filter == filter,]
-          
-          
-        }
-        
-        
-      }
-      
-    }
-  }
-  
   
 }
-
-
-####selecting top performing parameter#####
-library(cutpointr)
-wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v10.newsplit7/'
-figdir = paste0(wkdir,'/cv.figures.all.cancer/')
-figdir = paste0(wkdir,'/cv.figures.300/')
-figdir = paste0(wkdir,'/cv.figures.genhancer.final.90/')
-
+figdir = paste0(wkdir,'/discovery.cv.figures/')
 dir.create(figdir,recursive = T)
 perfdir= paste0(wkdir,'/')
-#overall.perf = readRDS(paste0(perfdir,'mean.cv.select.overall.performance.RDS'))
-#overall.perf = readRDS(paste0(perfdir,'.brca.300.performance.newsplit.RDS'))
-overall.perf = readRDS(paste0(perfdir,'mean.cv.genhancer.performance.newsplit.75.RDS'))
-overall.perf = readRDS(paste0(perfdir,'mean.cv.prad.silencer.performance.RDS'))
-overall.perf = readRDS(paste0(perfdir,'mean.cv.topprad.silencer.performance.RDS'))
-overall.perf = readRDS(paste0(perfdir,'mean.cv.genhancer.top.performance.RDS'))
+perf.list = list('mean.cv'= pred.df.collapse.mean)
 
 
-#overall.perf= readRDS(paste0(perfdir,'mean.cv.genhancer.performance.newsplit.hr.75.RDS'))
-overall.perf = overall.perf[as.numeric(overall.perf$freq) >= 1 & overall.perf$n.features == 90 ,] ##& overall.perf$covariate == 'None'
-
-overall.perf.list = split(overall.perf,overall.perf$comparison)
-overall.perf.list.top = lapply(overall.perf.list, function(x) {
-  targ.id = x$GRP_Id[1]
-  return.df = x[x$GRP_Id %in% targ.id,]
-  return.df = return.df[order(-return.df$All),]
-  rownames(return.df) = c(1:nrow(return.df))
-  return(return.df)
-  
+#computing concordance and auc from mean CV risk scores 
+targ.perf = pred.df.collapse.mean
+targ.perf.list = split(targ.perf, targ.perf[,c('model','feature','test','n.features','mat','direction','comparison','covariate','fc')])
+targ.perf.list = targ.perf.list[sapply(targ.perf.list,nrow)>0 ]
+targ.perf.list =lapply(targ.perf.list, function(x) {
+  tmp = x
+  tmp$All = auc_calc(tmp,c('Control','Cancer'))
+  concordance_calc = function(tmp,sample.info){
+    x = merge(tmp,sample.info)
+    x$event=ifelse(x$reported =='Cancer',1,0)
+    x$reported.surv = ifelse(x$reported == 'Cancer',1,0)
+    ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE)
+    return(ci$c.index)
+  }
+  tmp$Concordance = concordance_calc(tmp,sample.info)
+  return(tmp)
 } )
-lapply(overall.perf.list.top,head)
 
-parameters = c('model','feature','test','n.features', 'mat','comparison','direction')#covariate
+overall.perf=do.call('rbind',targ.perf.list)
+overall.perf = overall.perf[order(-overall.perf$All),]
+rownames(overall.perf) = c(1:nrow(overall.perf))
 
-#top breast cancer parameters
-top.perf = overall.perf.list.top[[1]]#[1,]
-top.perf = top.perf[top.perf$n.features == 90,]
-overall.perf.targ.breast = overall.perf
-for (p in parameters) {
-  print(top.perf[,p])
-  overall.perf.targ.breast = overall.perf.targ.breast[overall.perf.targ.breast[,p] == top.perf[,p],]
-  
-}
-overall.perf.targ.breast = overall.perf[overall.perf$All == max(overall.perf$All),]
-score.cutoff = cutpointr(overall.perf.targ.breast$methylation_score,overall.perf.targ.breast$reported, method = maximize_metric, metric = youden)
-score.cutoff.breast = score.cutoff$optimal_cutpoint
-#saveRDS(score.cutoff.breast,paste0(wkdir,'breast.optimal.scorecutoff.RDS'))
-#top prostate cancer parameters
-top.perf = overall.perf.list.top[['Prostate']]#[1,]
-top.perf = top.perf[top.perf$n.features == 100,][1,]
-overall.perf.targ.prostate = overall.perf.list[['Prostate']]
-for (p in parameters) {
-  overall.perf.targ.prostate = overall.perf.targ.prostate[overall.perf.targ.prostate[,p] == top.perf[,p],]
-  
-}
+####selecting top performing parameter according to best CV auroc
+
+target.parameters = overall.perf#[overall.perf$n.features == 90 ,] 90 features used in manuscript
+target.parameters = target.parameters[order(-target.parameters$All),][1,]
+
+overall.perf.targ.prostate = overall.perf[overall.perf$n.features == target.parameters$n.features & 
+                                            overall.perf$direction == target.parameters$direction & 
+                                            overall.perf$feature == target.parameters$feature & 
+                                            overall.perf$mat == target.parameters$mat &
+                                            overall.perf$model == target.parameters$model, ]
+
 score.cutoff = cutpointr(overall.perf.targ.prostate$methylation_score,overall.perf.targ.prostate$reported, method = maximize_metric, metric = youden)
 score.cutoff.prostate = score.cutoff$optimal_cutpoint
-#saveRDS(score.cutoff.prostate,paste0(wkdir,'prostate.optimal.scorecutoff.RDS'))
 
 
 ####prostate cancer plotting#####
-
-predir=paste0(savedir,'/predictions/')
-figdir=paste0(savedir,'figures.prad.discovery.bm0.final/')
-dir.create(predir,recursive = T)
-dir.create(figdir,recursive = T)
-
-gleason.score = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/pathology_records/prostate/gleason.score.RDS')
-discovery.set = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/discovery.set2.samples.RDS')
-validation.set = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/validation.set2.samples.RDS')
-all.sample.info=readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/combined.set2.samples.RDS')
-sample.info = all.sample.info
-pred.df.targ = overall.perf.targ.prostate;
+gleason.score = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/pathology_records/prostate/gleason.score.RDS') #upload
+combined.info.all = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/combined.ohs.full.qx.RDS') #upload
+pred.df.targ = overall.perf.targ.prostate
 name = paste0(figdir,'prad.top');
-merged.df.all= discovery.set;
+merged.df.all= sample.inof;
 gleason.score = gleason.score;
 score.cutoff=score.cutoff.prostate;
-dx.all = F;
-cutpoint.use =T;
-gs.plot= T
-prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.score,figdir,dx.all=F,score.cutoff=0.5, gs.plot = T,cutpoint.use=F) {
-  library(cenROC)
-  library(plyr)
-  library(ggplot2)
-  library(ggh4x)
-  
+dx.all = F; 
+cutpoint.use =T; #using Youden's cutoff
+gs.plot= T #plotting gleason scores
+
+#initally embedded as a function, but survminer has trouble reading in some data, so try to just run with the chunk of code in braces below
+{
+
   tpr.fpr.calc = function(x){
     tmp1 = x
     tmp1$f = as.integer(ifelse(tmp1$reported == 'Control', 0, 1))
@@ -1283,7 +318,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
   pred.df.targ.collapse.all = pred.df.targ
   pred.df.targ.collapse.all$model = gsub('.new','',pred.df.targ.collapse.all$model)
   pred.df.targ.collapse.all= merge(pred.df.targ.collapse.all, merged.df.all[,c('GRP_Id','ResearchId')],by= colnames(merged.df.all)[colnames(merged.df.all) %in% colnames(pred.df.targ.collapse.all)])
-  pred.df.targ.collapse.all = merge(pred.df.targ.collapse.all,gleason.score[,c('ResearchId','Gleason.score')],by='ResearchId',all.x=T )
+  pred.df.targ.collapse.all = merge(pred.df.targ.collapse.all,gleason.score[,c('GRP_Id','Gleason.score')],by='ResearchId',all.x=T )
   pred.df.targ.collapse.all[is.na(pred.df.targ.collapse.all$Gleason.score),'Gleason.score'] = 'Not Reported'
   pred.df.targ.collapse.all$Gleason.score = ifelse(as.character(pred.df.targ.collapse.all$reported) == 'Cancer',pred.df.targ.collapse.all$Gleason.score,
                                                    ifelse(as.character(pred.df.targ.collapse.all$reported) == 'Control','Control','Not Reported'))
@@ -1295,8 +330,8 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
     auc.plot.all$model = x$model[1]
     return(auc.plot.all)
   } )
+  
   pred.df.targ.collapse.df = do.call('rbind',pred.df.targ.collapse.list)
-  combined.info.all = readRDS(paste0('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/combined.ohs.full.qx.RDS'))
   summary.calc = function(pred.df.targ.collapse,merged.df.all.tmp,weighting) {
     if (length(unique(pred.df.targ.collapse$reported)) > 1){
       auc.plot.all = tpr.fpr.calc(pred.df.targ.collapse)
@@ -1388,12 +423,9 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       
       male.ohs.qx.weighting = function(subject1,combined.info.all) {
         subject = merge(subject1, all.sample.info[,c('GRP_Id','Smoking.Frequency','age_group','Family.history.prostate','Alch.con.group')],by='GRP_Id')
-        #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.prostate','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
         combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
         combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
         combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-        #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
         age.groups =  unique(combined.info.all.male$age_group)
         fh.groups = unique(combined.info.all.male$Family.history.prostate)
         alc.groups = unique(combined.info.all.male$Alch.con.group)
@@ -1436,7 +468,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       }
       
       mean.perf.df.targ.tmp.merged$weighting = male.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
-      
       
       #normalized weighting
       weighted.df = NULL
@@ -1674,12 +705,9 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       subject1 = unique(mean.perf.df.targ.tmp.merged)
       male.ohs.qx.weighting = function(subject1,combined.info.all) {
         subject = merge(subject1, all.sample.info[,c('GRP_Id','Smoking.Frequency','age_group','Family.history.prostate','Alch.con.group')],by='GRP_Id')
-        #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.prostate','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
         combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
         combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
         combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-        #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
         age.groups =  unique(combined.info.all.male$age_group)
         fh.groups = unique(combined.info.all.male$Family.history.prostate)
         alc.groups = unique(combined.info.all.male$Alch.con.group)
@@ -1873,7 +901,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
       print(plot1)
       dev.off()
       
@@ -1893,7 +921,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
       print(plot1)
       dev.off()
       
@@ -1965,7 +993,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
       print(plot1)
       dev.off()
       
@@ -1985,7 +1013,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
       print(plot1)
       dev.off()
       
@@ -2009,7 +1037,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Sampling time prior to diagnosis') + ylab('CV AUROC (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.auroc.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.auroc.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       plot1 = ggplot(auc.res2,aes(x = dx.time, y = ci, col = dx.time)) +
@@ -2027,7 +1055,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)') + ylab('CV Concordance Index (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.ci.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.ci.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       plot1 = ggplot(auc.res2,aes(x = dx.time, y =se.spec.95 , col = dx.time)) +
@@ -2045,7 +1073,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)') + ylab('Sensitivity at 95% Specificity (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.sens.spec95.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.sens.spec95.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2064,7 +1092,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('Sensitivity at 90% Specificity (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.sens.spec90.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.sens.spec90.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2085,7 +1113,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.sens.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.sens.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2105,7 +1133,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Specificity')
       
-      png(paste0(name,'.filler.',c,'.spec.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.spec.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2126,7 +1154,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff PPV')
       
-      png(paste0(name,'.filler.',c,'.ppv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.ppv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2146,7 +1174,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff NPV')
       
-      png(paste0(name,'.filler.',c,'.npv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.npv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2167,7 +1195,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.sens.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.sens.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2187,7 +1215,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosi (Years)s')+ ylab('F1-Score Maximized Cutoff Specificity')
       
-      png(paste0(name,'.filler.',c,'.spec.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.spec.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2208,7 +1236,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff PPV')
       
-      png(paste0(name,'.filler.',c,'.ppv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.ppv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2228,7 +1256,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff NPV')
       
-      png(paste0(name,'.filler.',c,'.npv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.npv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2305,7 +1333,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
     dx5 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','4-5'),]
     
     
-    library(pROC)
+
     #dx time 1 year
     
     pred.df.targ.collapse$reported = factor(pred.df.targ.collapse$reported,levels = c('Control','Cancer'))
@@ -2392,11 +1420,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       auc.res2$title = 'Diagnosis Time'
       combined.auroc = rbind(combined.auroc,auc.res2)
       
-      #annotating auc t
-      
-      
-      #annotating others
-      
       diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
       names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
       combined.auc.plot.all = rbind(auc.plot.all[[2]],
@@ -2420,7 +1443,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2457,7 +1480,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
     }
@@ -2506,7 +1529,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -2535,7 +1558,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Sampling time prior to diagnosis') + ylab('CV AUROC (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.auroc.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res2,aes(x = dx.time, y = ci, col = dx.time)) +
@@ -2553,7 +1576,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)') + ylab('CV Concordance Index (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.ci.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.ci.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res2,aes(x = dx.time, y =se.spec.95 , col = dx.time)) +
@@ -2571,7 +1594,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)') + ylab('Sensitivity at 95% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec95.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.sens.spec95.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2590,7 +1613,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('Sensitivity at 90% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec90.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.sens.spec90.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2611,7 +1634,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.sens.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2631,7 +1654,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.spec.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2652,7 +1675,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.ppv.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2672,7 +1695,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.npv.youden.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2693,7 +1716,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.sens.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2713,7 +1736,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.spec.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2734,7 +1757,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.ppv.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2754,7 +1777,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.npv.f1.ci.dxtime1.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2778,7 +1801,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.labs.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.dxtime1.labs.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2919,7 +1942,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time (Years)') + ylab('Time-Dependent CV AUROC')
     
-    png(paste0(name,'.filler.',c,'.timeauroc.stage.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.timeauroc.stage.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2935,7 +1958,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.stage.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.stage.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -2957,7 +1980,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.stage.labs.png'),height = 1000,width=1000,res = 300)
+    png(paste0(name,'.',c,'.auroc.stage.labs.png'),height = 1000,width=1000,res = 300)
     print(plot1)
     dev.off()
     
@@ -2981,7 +2004,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage at Diagnosis') + ylab('CV AUROC (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.auroc.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.auroc.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res1,aes(x = stage, y = ci, col = stage)) +
@@ -2999,7 +2022,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage at Diagnosis') + ylab('CV Concordance Index (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.ci.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ci.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res1,aes(x = stage, y =se.spec.95 , col = stage)) +
@@ -3017,7 +2040,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage at Diagnosis') + ylab('Sensitivity at 95% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec95.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.spec95.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3036,7 +2059,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage at Diagnosis')+ ylab('Sensitivity at 90% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec90.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.spec90.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3109,7 +2132,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('Youden\'s Index Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.youden.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.youden.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3129,7 +2152,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('Youden\'s Index Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.youden.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.spec.youden.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3150,7 +2173,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('Youden\'s Index Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.youden.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ppv.youden.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3170,7 +2193,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('Youden\'s Index Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.youden.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.youden.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3191,7 +2214,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('F1-Score Maximized Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.f1.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.f1.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3211,7 +2234,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('F1-Score Maximized Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.f1.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.spec.f1.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3232,7 +2255,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('F1-Score Maximized Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.f1.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ppv.f1.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -3252,16 +2275,11 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Stage')+ ylab('F1-Score Maximized Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.f1.ci.stage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.f1.ci.stage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
-    
-    
-    
-    
-    
-    
+
     ####plotting grade#####
     print('grade')
     if (gs.plot == T){
@@ -3337,7 +2355,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Time (Years)') + ylab('Time-Dependent CV AUROC')
       
-      png(paste0(name,'.filler.',c,'.timeauroc.grade.png'),height = 1100,width=1100,res = 300)
+      png(paste0(name,'.',c,'.timeauroc.grade.png'),height = 1100,width=1100,res = 300)
       print(plot1)
       dev.off()
       
@@ -3351,7 +2369,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.grade.png'),height = 1000,width=1000,res = 300)
+      png(paste0(name,'.',c,'.auroc.grade.png'),height = 1000,width=1000,res = 300)
       print(plot1)
       dev.off()
       
@@ -3371,7 +2389,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
               axis.title=element_text(size=8,face="bold"),
               legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.auroc.grade.labs.png'),height = 1000,width=1000,res = 300)
+      png(paste0(name,'.',c,'.auroc.grade.labs.png'),height = 1000,width=1000,res = 300)
       print(plot1)
       dev.off()
       grade_colors.sample = c('Control'= 'grey','6' = '#82A6B1','7' = '#35605A', '8' = '#2A324B','9'='#66462C')
@@ -3438,7 +2456,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade at Diagnosis') + ylab('CV AUROC (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.auroc.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.auroc.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       plot1 = ggplot(auc.res1,aes(x = var, y = ci, col = var)) +
@@ -3456,7 +2474,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade at Diagnosis') + ylab('CV Concordance Index (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.ci.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.ci.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       plot1 = ggplot(auc.res1,aes(x = var, y =se.spec.95 , col = var)) +
@@ -3474,7 +2492,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade at Diagnosis') + ylab('Sensitivity at 95% Specificity (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.sens.spec95.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.sens.spec95.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3493,7 +2511,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade at Diagnosis')+ ylab('Sensitivity at 90% Specificity (95% CI)')
       
-      png(paste0(name,'.filler.',c,'.sens.spec90.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.sens.spec90.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3514,7 +2532,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('Youden\'s Index Cutoff Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.sens.youden.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.sens.youden.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3534,7 +2552,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('Youden\'s Index Cutoff Specificity')
       
-      png(paste0(name,'.filler.',c,'.spec.youden.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.spec.youden.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3555,7 +2573,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('Youden\'s Index Cutoff PPV')
       
-      png(paste0(name,'.filler.',c,'.ppv.youden.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.ppv.youden.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3575,7 +2593,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('Youden\'s Index Cutoff NPV')
       
-      png(paste0(name,'.filler.',c,'.npv.youden.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.npv.youden.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3596,7 +2614,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('F1-Score Maximized Cutoff Sensitivity')
       
-      png(paste0(name,'.filler.',c,'.sens.f1.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.sens.f1.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3616,7 +2634,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('F1-Score Maximized Cutoff Specificity')
       
-      png(paste0(name,'.filler.',c,'.spec.f1.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.spec.f1.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3637,7 +2655,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('F1-Score Maximized Cutoff PPV')
       
-      png(paste0(name,'.filler.',c,'.ppv.f1.ci.Grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.ppv.f1.ci.Grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
@@ -3657,279 +2675,13 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
         xlab('Grade')+ ylab('F1-Score Maximized Cutoff NPV')
       
-      png(paste0(name,'.filler.',c,'.npv.f1.ci.grade.png'),height = 1100,width=600,res = 300)
+      png(paste0(name,'.',c,'.npv.f1.ci.grade.png'),height = 1100,width=600,res = 300)
       print(plot1)
       dev.off()
       
     }
     
-    #####plotting last PSA######
-    #last mmg
-    print('psa ever')
-    
-    last.psa = read.csv('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/ohs.sample.qx/prostate.psa.information.csv',header=T,stringsAsFactors = F)
-    last.psa$psa = ifelse(last.psa$HS_PSA_LAST == '-7','Never Had','Unknown')
-    last.psa$psa = ifelse(last.psa$HS_PSA_LAST == '1','< 6 months',last.psa$psa)
-    last.psa$psa = ifelse(last.psa$HS_PSA_LAST == '2','0.5-1 year',last.psa$psa)
-    last.psa$psa = ifelse(last.psa$HS_PSA_LAST == '3','1-2 years',last.psa$psa)
-    last.psa$psa = ifelse(last.psa$HS_PSA_LAST == '4','2-3 years',last.psa$psa)
-    last.psa$psa = ifelse(last.psa$HS_PSA_LAST == '5','3+ years',last.psa$psa)
-    
-    
-    library(ggh4x)
-    
-    
-    merged.df.all.tmp = merge(merged.df.all.tmp,last.psa[,c('ResearchId','psa')],all.x=T)
-    merged.df.all.tmp[is.na(merged.df.all.tmp$psa),'psa'] = 'NR'
-    age0 = merged.df.all.tmp[merged.df.all.tmp$psa %in% ('Never Had') | merged.df.all.tmp$group =='Control',]
-    age1 = merged.df.all.tmp[merged.df.all.tmp$psa %in% ('< 6 months') | merged.df.all.tmp$group =='Control',]
-    age2 = merged.df.all.tmp[merged.df.all.tmp$psa %in% c('0.5-1 year')| merged.df.all.tmp$group =='Control',]
-    age3 = merged.df.all.tmp[merged.df.all.tmp$psa %in% c('1-2 years')| merged.df.all.tmp$group =='Control',]
-    age4 = merged.df.all.tmp[merged.df.all.tmp$psa %in% c('2-3 years','3+ years')| merged.df.all.tmp$group =='Control',]
-    
-    
-    
-    
-    auc.plot.all.s0 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% age0$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.s0[[2]]$var = 'Never'
-    auc.plot.all.s0[[2]]$var.group =  'Last PSA'
-    
-    auc.plot.all.s1 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% age1$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.s1[[2]]$var = '< 0.5'
-    auc.plot.all.s1[[2]]$var.group =  'Last PSA'
-    
-    auc.plot.all.s2 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% age2$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.s2[[2]]$var = '0.5-1'
-    auc.plot.all.s2[[2]]$var.group =  'Last PSA'
-    
-    
-    auc.plot.all.s3 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% age3$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.s3[[2]]$var = '1-2'
-    auc.plot.all.s3[[2]]$var.group =  'Last PSA'
-    
-    
-    auc.plot.all.s4 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% age4$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.s4[[2]]$var = '2+'
-    auc.plot.all.s4[[2]]$var.group =  'Last PSA'
-    
-    
-    
-    auc.res1 = rbind(
-      auc.plot.all.s0[[2]][1,],
-      auc.plot.all.s1[[2]][1,],
-      auc.plot.all.s2[[2]][1,],
-      auc.plot.all.s3[[2]][1,],
-      auc.plot.all.s4[[2]][1,])
-    auc.res1$title = 'Last PSA'
-    auc.res1$model = c
-    #combined.auroc = combined.auroc[,colnames(combined.auroc) %in% colnames(auc.res1)]
-    combined.auroc = rbind(combined.auroc,auc.res1[,colnames(auc.res1) %in% colnames(combined.auroc)])
-    
-    psa_colors = c('All' = "#000004FF",
-                   'Never' = '#93A3B1',
-                   '< 0.5'='#78BC61',
-                   '0.5-1'='#C0C781',
-                   '1-2'='#C59B76',
-                   '2+'='#AD343E')
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.s0[[3]]$var = 'Never'
-    auc.plot.all.s1[[3]]$var = '< 0.5'
-    auc.plot.all.s2[[3]]$var = '0.5-1'
-    auc.plot.all.s3[[3]]$var = '1-2'
-    auc.plot.all.s4[[3]]$var = '2+'
-    
-    
-    auc.t =rbind(auc.plot.all.s0[[3]],
-                 auc.plot.all.s1[[3]],
-                 auc.plot.all.s2[[3]],
-                 auc.plot.all.s3[[3]],
-                 auc.plot.all.s4[[3]])
-    
-    
-    auc.t$title = 'Last PSA'
-    auc.t$model = c
-    auc.t = auc.t[,colnames(auc.t) %in% colnames(auc.t.combined)]
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #auc t
-    
-    plot1 = ggplot(auc.t[auc.t$time >= 365*1,],aes(x = time/365, y = AUC, col = var)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      scale_y_continuous(limits=c(0,1))+
-      theme_bw()+ 
-      #facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-      xlab('Time (Years)') + ylab('Time-Dependent CV AUROC')
-    
-    png(paste0(name,'.filler.',c,'.timeauroc.psa.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-    combined.auc.plot.all = rbind(
-      auc.plot.all.s0[[2]],
-      auc.plot.all.s1[[2]],
-      auc.plot.all.s2[[2]],
-      auc.plot.all.s3[[2]],
-      auc.plot.all.s4[[2]])
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.psa.png'),height = 1000,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.psa.labs.png'),height = 1000,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    pred.df.targ.collapse.annotated = merge(pred.df.targ.collapse, last.psa[,c('ResearchId','psa')],all.x=T)
-    #
-    plot1 = ggplot(pred.df.targ.collapse.annotated[!is.na(pred.df.targ.collapse.annotated$psa),],aes(x = psa, y = methylation_score, col = psa)) +
-      geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      scale_y_continuous(limits=c(0,1))+
-      
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Last PSA Test (years)') + ylab('Methylation Score')
-    
-    png(paste0(name,'.psa.methscore.',c,'.png'),height = 900,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-    
-    plot1 = ggplot(auc.res1,aes(x = var, y = auc, col = var)) +
-      geom_errorbar(aes(ymin=auc.lower, ymax=auc.upper), width=.2,
-                    position=position_dodge(0.05))+
-      geom_point()+
-      scale_y_continuous(limits=c(0,1))+
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid(.~title)+
-      
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ 
-      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-      xlab('Last PSA Test (Years)') + ylab('CV AUROC (95% CI)')
-    
-    png(paste0(name,'.filler.',c,'.auroc.ci.psa.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    plot1 = ggplot(auc.res1,aes(x = var, y = ci, col = var)) +
-      geom_errorbar(aes(ymin=ci.lower, ymax=ci.upper), width=.2,
-                    position=position_dodge(0.05))+
-      geom_point()+
-      scale_y_continuous(limits=c(0,1))+
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ 
-      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-      xlab('Last PSA Test (Years)') + ylab('CV Concordance Index (95% CI)')
-    
-    png(paste0(name,'.filler.',c,'.ci.ci.psa.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    plot1 = ggplot(auc.res1,aes(x = var, y =se.spec.95 , col = var)) +
-      geom_errorbar(aes(ymin=se.spec.95.lower, ymax=se.spec.95.upper), width=.2,
-                    position=position_dodge(0.05))+
-      geom_point()+
-      scale_y_continuous(limits=c(0,1))+
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ 
-      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-      xlab('Last PSA Test (years)') + ylab('Sensitivity at 95% Specificity (95% CI)')
-    
-    png(paste0(name,'.filler.',c,'.sens.spec95.ci.psa.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    plot1 = ggplot(auc.res1,aes(x = var, y = se.spec.90, col = var)) +
-      geom_errorbar(aes(ymin=se.spec.90.lower, ymax=se.spec.90.upper), width=.2,
-                    position=position_dodge(0.05))+
-      geom_point()+
-      scale_y_continuous(limits=c(0,1))+
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ 
-      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-      xlab('Last PSA Test (years)')+ ylab('Sensitivity at 90% Specificity (95% CI)')
-    
-    png(paste0(name,'.filler.',c,'.sens.spec90.ci.psa.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + 
-      xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.psa.labs.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-    #boxplot of score
-    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = psa, y = methylation_score, col = psa)) +
-      geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(psa_colors))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      scale_y_continuous(limits=c(0,1))+
-      
-      facet_grid2(. ~ reported)+
-      
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ 
-      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-      xlab('Last PSA Test (years)') + ylab('Methylation Score')
-    
-    png(paste0(name,'.psa.methscore.',c,'.png'),height = 900,width=2000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-    #
+  
     #plotting age##
     ####BASELINE AGE#####
     library(ggh4x)
@@ -4011,7 +2763,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time (Years)') + ylab('Time-Dependent CV AUROC')
     
-    png(paste0(name,'.filler.',c,'.timeauroc.age.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.timeauroc.age.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -4029,7 +2781,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.age.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.age.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -4052,7 +2804,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.age.labs.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.age.labs.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -4076,7 +2828,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age') + ylab('CV AUROC (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.auroc.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.auroc.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res1,aes(x = var, y = ci, col = var)) +
@@ -4094,7 +2846,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age') + ylab('CV Concordance Index (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.ci.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ci.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res1,aes(x = var, y =se.spec.95 , col = var)) +
@@ -4104,7 +2856,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       scale_y_continuous(limits=c(0,1))+
       scale_color_manual(values = c(age_colors))+ #+ ggtitle(title) +
       theme_bw()+ 
-      #facet_grid(.~title)+
       theme(text = element_text(size=8),
             axis.text=element_text(size=8, face = "bold"),
             axis.title=element_text(size=8,face="bold"),
@@ -4112,7 +2863,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age') + ylab('Sensitivity at 95% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec95.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.spec95.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4123,7 +2874,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       scale_y_continuous(limits=c(0,1))+
       scale_color_manual(values = c(age_colors))+ #+ ggtitle(title) +
       theme_bw()+ 
-      #facet_grid(.~title)+
       theme(text = element_text(size=8),
             axis.text=element_text(size=8, face = "bold"),
             axis.title=element_text(size=8,face="bold"),
@@ -4131,7 +2881,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('Sensitivity at 90% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec90.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.spec90.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4141,12 +2891,9 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
     #boxplot of score
     plot1 = ggplot(pred.df.targ.collapse.annotated[pred.df.targ.collapse.annotated$Cancer %in% c('Control','Breast'),],aes(x = age_group2, y = methylation_score, col = age_group2)) +
       geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(age_colors))+ #+ ggtitle(title) +
+      scale_color_manual(values = c(age_colors))+
       theme_bw()+ 
       scale_y_continuous(limits=c(0,1))+
-      
-      # facet_grid2(. ~ Cancer)+
-      
       theme(text = element_text(size=8),
             axis.text=element_text(size=8, face = "bold"),
             axis.title=element_text(size=8,face="bold"),
@@ -4177,7 +2924,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('Youden\'s Index Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.youden.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.youden.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4197,7 +2944,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('Youden\'s Index Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.youden.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.spec.youden.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4218,7 +2965,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('Youden\'s Index Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.youden.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ppv.youden.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4238,7 +2985,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('Youden\'s Index Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.youden.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.youden.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4259,7 +3006,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('F1-Score Maximized Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.f1.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.f1.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4279,7 +3026,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('F1-Score Maximized Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.f1.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.spec.f1.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4300,7 +3047,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('F1-Score Maximized Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.f1.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ppv.f1.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4320,7 +3067,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Baseline Age')+ ylab('F1-Score Maximized Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.f1.ci.age.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.f1.ci.age.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4334,7 +3081,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
     library(ggh4x)
     age_grouping3 = function(age) {
       tmp = ifelse(age >= 30 & age < 50, '30-50', age)
-      # tmp = ifelse(age >= 40 & age < 50, '40-50', tmp)
       tmp = ifelse(age >= 50 & age < 60, '50-60', tmp)
       tmp = ifelse(age >= 60 & age < 70, '60-70', tmp)
       tmp = ifelse(age >= 70, '70-80', tmp)
@@ -4346,7 +3092,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
     merged.df.all.tmp$dx.age = ifelse(merged.df.all.tmp$Cancer != 'Control',merged.df.all.tmp$SDC_AGE_CALC + merged.df.all.tmp$diff_in_days/365,merged.df.all.tmp$SDC_AGE_CALC)
     merged.df.all.tmp$age_group3 = age_grouping3(merged.df.all.tmp$dx.age)
     
-    # age1 = merged.df.all.tmp[merged.df.all.tmp$age_group3 %in% ('30-50') | merged.df.all.tmp$Cancer =='Control',]
     age2 = merged.df.all.tmp[merged.df.all.tmp$age_group3 %in% c('50-60') | merged.df.all.tmp$Cancer =='Control',]
     age3 = merged.df.all.tmp[merged.df.all.tmp$age_group3 %in% c('60-70') | merged.df.all.tmp$Cancer =='Control',]
     age4 = merged.df.all.tmp[merged.df.all.tmp$age_group3 %in% c('70-80') | merged.df.all.tmp$Cancer =='Control',]
@@ -4413,7 +3158,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Time (Years)') + ylab('Time-Dependent CV AUROC')
     
-    png(paste0(name,'.filler.',c,'.timeauroc.dxage.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.timeauroc.dxage.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -4430,7 +3175,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.dxage.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.dxage.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -4452,7 +3197,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             axis.title=element_text(size=8,face="bold"),
             legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.dxage.labs.png'),height = 1100,width=1100,res = 300)
+    png(paste0(name,'.',c,'.auroc.dxage.labs.png'),height = 1100,width=1100,res = 300)
     print(plot1)
     dev.off()
     
@@ -4474,7 +3219,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age') + ylab('CV AUROC (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.auroc.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.auroc.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res1,aes(x = var, y = ci, col = var)) +
@@ -4492,7 +3237,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age') + ylab('CV Concordance Index (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.ci.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ci.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     plot1 = ggplot(auc.res1,aes(x = var, y =se.spec.95 , col = var)) +
@@ -4510,7 +3255,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age') + ylab('Sensitivity at 95% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec95.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.spec95.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4529,7 +3274,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('Sensitivity at 90% Specificity (95% CI)')
     
-    png(paste0(name,'.filler.',c,'.sens.spec90.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.spec90.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4551,7 +3296,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
             legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + 
       xlab('False Positive Rate') + ylab('Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.auroc.dxage.labs.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.auroc.dxage.labs.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4596,7 +3341,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('Youden\'s Index Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4616,7 +3361,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('Youden\'s Index Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.spec.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4637,7 +3382,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('Youden\'s Index Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ppv.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4657,7 +3402,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('Youden\'s Index Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.youden.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4678,7 +3423,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('F1-Score Maximized Cutoff Sensitivity')
     
-    png(paste0(name,'.filler.',c,'.sens.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.sens.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4698,7 +3443,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('F1-Score Maximized Cutoff Specificity')
     
-    png(paste0(name,'.filler.',c,'.spec.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.spec.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4719,7 +3464,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('F1-Score Maximized Cutoff PPV')
     
-    png(paste0(name,'.filler.',c,'.ppv.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.ppv.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4739,7 +3484,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('Diagnosis Age')+ ylab('F1-Score Maximized Cutoff NPV')
     
-    png(paste0(name,'.filler.',c,'.npv.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.f1.ci.dxage.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
@@ -4787,13 +3532,14 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('')+ ylab('Value')
     
-    png(paste0(name,'.filler.',c,'.npv.spec.youdenoverall.png'),height = 1100,width=800,res = 300)
+    png(paste0(name,'.',c,'.npv.spec.youdenoverall.png'),height = 1100,width=800,res = 300)
     print(plot1)
     dev.off()
     
-    png(paste0(name,'.filler.',c,'.npv.spec.youdenoverall.short.png'),height = 600,width=800,res = 300)
+    png(paste0(name,'.',c,'.npv.spec.youdenoverall.short.png'),height = 600,width=800,res = 300)
     print(plot1)
     dev.off()
+    
     #specificty/npv plot youdens index cutoff
     targ.plots.spec = unique(combined.auroc[combined.auroc$var == 'All',c('f1cutpoint.spec',
                                                                           'f1cutpoint.spec.lower',
@@ -4814,9 +3560,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
                     position=position_dodge(0.05))+
       geom_point()+
       scale_y_continuous(limits=c(0,1))+
-      #scale_color_manual(values = c(dxage_colors))+ #+ ggtitle(title) +
       theme_bw()+ 
-      #facet_grid(.~title)+
       theme(text = element_text(size=8),
             axis.text=element_text(size=8, face = "bold"),
             axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
@@ -4826,11 +3570,11 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
       guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
       xlab('')+ ylab('Value')
     
-    png(paste0(name,'.filler.',c,'.npv.spec.f1overall.png'),height = 1100,width=600,res = 300)
+    png(paste0(name,'.',c,'.npv.spec.f1overall.png'),height = 1100,width=600,res = 300)
     print(plot1)
     dev.off()
     
-    png(paste0(name,'.filler.',c,'.npv.spec.f1overall.short.png'),height = 600,width=800,res = 300)
+    png(paste0(name,'.',c,'.npv.spec.f1overall.short.png'),height = 600,width=800,res = 300)
     print(plot1)
     dev.off()
     
@@ -4843,13 +3587,12 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
     ####surv plots#####
     
     #km curves.all#
-    library(survminer)
     pca.coords =merge(pred.df.targ.collapse.annotated,merged.df.all.tmp) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
     cp.F1_score= cutpointr(pred.df.targ.collapse.all$methylation_score,pred.df.targ.collapse.all$reported, method = maximize_metric, metric = F1_score)$optimal_cutpoint
     #cp.youden
     #cp.F1_score
     if (dx.all == T) {
-      max.time = 10
+      max.time = 9
     } else {
       max.time=5
     }
@@ -4969,7 +3712,7 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
         font.y = c(8, "bold",'black'),
         alpha = 0.6,
         font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  
       
       
       png(paste0(name,".scores.surv_quart.breaks.",c,'.',s,".cut.png"),height = 1100, width = 1100,res=300)
@@ -5401,622 +4144,6 @@ prad.auc.plot.all.original = function(pred.df.targ,name,merged.df.all,gleason.sc
   
 }
 
-combined.performance = list(return.df.final.auroc,return.df.final.auct)
-saveRDS(combined.performance, paste0(wkdir,'prad.discovery.performance.RDS'))
-
-
-combined.auroc.breast = combined.auroc
-saveRDS(combined.auroc.breast,paste0(savedir,'combined.breast.performance.auroc.RDS'))
-integrated.calc = function(combined.predictions.df.male.filt) {
-  
-  
-  auroc.summary=split(combined.predictions.df.male.filt,combined.predictions.df.male.filt$feature.type1)
-  auroc.summary=sapply(auroc.summary, function(x) auc_calc(x,labels= c('Control','Cancer')))
-  tmp = combined.predictions.df.male.filt#[combined.predictions.df.male.filt$feature.type1 %in% names(auroc.summary[auroc.summary>0.55]),c('GRP_Id','methylation_score','reported')]
-  
-  tmp = ddply(tmp, c('GRP_Id','reported'),numcolwise(mean))
-  tmp$feature.type1 = 'Integrated'
-  return.df = rbind( combined.predictions.df.male.filt,tmp)
-  
-  return(return.df)
-}
-
-train.opt =readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/methylation.zero.cv10/cv.top.median.methscores.RDS')
-
-####ploting auroc summary prostate####
-variables = c('ci','auroc')
-
-stage_colors.score = c('I' = "#3B0F70FF",'II' = "#8C2981FF",'III/IV' = "#DE4968FF",'NR' = '#66462C')
-#morph_colors.score = c('Ductal+Lobular' = "#AFA2FF",'Ductal' = "#EF8275",'Lobular' = "#8A4F7D")
-grade_colors.sample = c('6' = '#82A6B1','7' = '#35605A', '8/9' = '#2A324B','NR'='#66462C')
-
-age_colors = c('35-45' = '#C5C392','45-55'= '#FFB20F','55-65'='#FF4B3E', '65-75'='#972D07')
-dxage_colors = c('30-50' = '#C5C392','50-60'= '#FFB20F','60-70'='#FF4B3E', '70-80'='#972D07')
-
-
-psa_colors = c('Never' = '#93A3B1',
-               '< 0.5'='#78BC61',
-               '0.5-1'='#C0C781',
-               '1-2'='#C59B76',
-               '2+'='#AD343E')
-combined.colors = c(stage_colors.score,grade_colors.sample,dxage_colors,psa_colors)
-#combined.colors = unique(combined.colors)
-#boxplot of score
-targ.vars=c('Stage','Grade','DxAge','Last PSA')
-combined.auroc$var.names=ifelse(combined.auroc$var.group == 'DxAge','Age at Diagnosis',
-                                ifelse(combined.auroc$var.group == 'Last PSA','Last PSA Test Before Baseline (Years)',
-                                       ifelse(combined.auroc$var.group == 'Grade','Gleason Grade Score',combined.auroc$var.group)))
-combined.auroc = combined.auroc[!duplicated(combined.auroc$var),]
-plot1 = ggplot(combined.auroc[combined.auroc$var.group %in% targ.vars,],aes(x = var, y = auc, fill = var)) +
-  geom_bar(stat='identity')+
-  geom_errorbar(aes(ymin=auc.lower, ymax=auc.upper), width=.2,
-                position=position_dodge(.9)) +
-  scale_fill_manual(values = c(combined.colors))+ #+ ggtitle(title) +
-  theme_bw()+ 
-  scale_y_continuous(limits=c(0,1))+
-  
-  theme(text = element_text(size=8),
-        axis.text=element_text(size=8, face = "bold"),
-        axis.title=element_text(size=8,face="bold"),
-        legend.position = "none",
-        strip.text=element_text(size=8, face = "bold"),
-        strip.background = element_rect(fill = "white"))+ 
-  facet_grid2(. ~ var.names,scales = 'free_x') +
-  guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-  xlab('') + ylab('AUROC (95% CI)')
-
-png(paste0(name,'all.combined.auroc.png'),height = 700,width=1000*length(targ.vars),res = 300)
-print(plot1)
-dev.off()
-
-
-plot1 = ggplot(combined.auroc[combined.auroc$var.group %in% targ.vars,],aes(x = var, y = auc, fill = var)) +
-  geom_bar(stat='identity')+
-  geom_errorbar(aes(ymin=ci.lower, ymax=ci.upper), width=.2,
-                position=position_dodge(.9)) +
-  scale_fill_manual(values = c(combined.colors))+ #+ ggtitle(title) +
-  theme_bw()+ 
-  scale_y_continuous(limits=c(0,1))+
-  
-  theme(text = element_text(size=8),
-        axis.text=element_text(size=8, face = "bold"),
-        axis.title=element_text(size=8,face="bold"),
-        legend.position = "none",
-        strip.text=element_text(size=8, face = "bold"),
-        strip.background = element_rect(fill = "white"))+ 
-  facet_grid2(. ~ var.names,scales = 'free_x') +
-  guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-  xlab('') + ylab('Concordance Index (95% CI)')
-
-png(paste0(name,'all.combined.ci.png'),height = 700,width=1000*length(targ.vars),res = 300)
-print(plot1)
-dev.off()
-
-#
-
-
-
-#####computing HR (prostate)######
-
-ohs.qx.pulled = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/complete.qx.pulled.samples.RDS')
-ohs.qx.pulled.multimatch = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/complete.qx.multimatched.samples.RDS')
-#
-combined.info = all.sample.info
-combined.info.filt = combined.info[,c('GRP_Id','SDC_GENDER','SDC_AGE_CALC','ALC_CUR_FREQ','SMK_CIG_STATUS','censorship_time','Cancer','DIS_CANCER_F_PROSTATE','DIS_CANCER_SIB_PROSTATE','DIS_CANCER_CHILD_PROSTATE')]
-combined.info.filt$Cohort = 'OHS'
-combined.info.filt[is.na(combined.info.filt$ALC_CUR_FREQ),'ALC_CUR_FREQ'] = '-7'
-combined.info.filt = merge(combined.info.filt,ohs.qx.pulled[,c('GRP_Id',colnames(ohs.qx.pulled)[grepl('.*BMI.*',colnames(ohs.qx.pulled))])],all.x=T )
-combined.info.filt= unique(combined.info.filt)
-#cohort wide
-canpath.master= read.csv('/.mounts/labs/awadallalab/public/EpiCan/CanPath_MasterFile_May2020_With_BMI_Cardio_PRS_IDsmatchs.txt',header = T, stringsAsFactors = F)
-canpath.master.control = canpath.master[grepl('OHS.*',canpath.master$ADM_STUDY_DATASET) == T,c('EpiCan_ID','ALC_CUR_FREQ','SDC_GENDER','ADM_QX_COMPLETION','SDC_AGE_CALC','SMK_CIG_STATUS','DIS_CANCER_F_PROSTATE','DIS_CANCER_SIB_PROSTATE','DIS_CANCER_CHILD_PROSTATE','BMI')]
-incident.cases = read.table("/.mounts/labs/awadallalab/public/EpiCan/OHS.incident.cancers.txt", sep ='\t',quote = '"', header = T,stringsAsFactors = F)
-incident.cases = incident.cases[grepl('.*Prostate.*',incident.cases$CURR_TOPOG_DESC),]
-epican.ids = read.csv("/.mounts/labs/awadallalab/public/EpiCan/EpiCAN_genotype_crosswalk_nondup.csv",quote = '"', header = T,stringsAsFactors = F)
-epican.ids.incident = epican.ids[epican.ids[,1] %in% incident.cases$participantid,]
-
-canpath.master.control$Cancer = ifelse(canpath.master.control$EpiCan_ID %in% epican.ids.incident$EpiCan_ID,'Cancer','Control')
-
-canpath.master.control$censorship_time = as.Date('2020-01-01',format = '%Y-%m-%d') - as.Date(canpath.master.control$ADM_QX_COMPLETION,format = '%Y-%m-%d') 
-canpath.master.control$GRP_Id =canpath.master.control$EpiCan_ID
-canpath.master.control = canpath.master.control[,c('GRP_Id','SDC_GENDER','ALC_CUR_FREQ','SDC_AGE_CALC','SMK_CIG_STATUS','censorship_time','Cancer','DIS_CANCER_F_PROSTATE','DIS_CANCER_SIB_PROSTATE','DIS_CANCER_CHILD_PROSTATE','BMI')]
-canpath.master.control$Cohort = 'EpiCan'
-canpath.master.control$Event = ifelse(canpath.master.control$Cancer == 'Control',0,1)
-
-#
-
-#matching epican to canpath#
-combined.info = discovery.set
-combined.info = all.sample.info
-
-#colnames(combined.info) =  gsub('MD_','',colnames(combined.info) )
-overlapping.vars = colnames(combined.info)
-overlapping.vars = overlapping.vars[overlapping.vars %in% colnames(canpath.master)]
-#a = merge(ohs.master, sample.info, by= overlapping.vars ) 
-#exc = sample.info[!sample.info$GRP_Id %in% a$GRP_Id,]
-qx.pull.match=F
-if (qx.pull.match == T){
-  ohs.qx.pulled = NULL
-  ohs.qx.pulled.multimatch = NULL
-  for (j in 1:nrow(combined.info)) {
-    print(j/nrow(combined.info))
-    targ.sample = sample.info[j,]
-    targ.sample.filt =targ.sample[,overlapping.vars]
-    non.na.vars = colnames(targ.sample.filt)[which(is.na(targ.sample.filt) == F)]
-    na.vars =  colnames(targ.sample.filt)[which(is.na(targ.sample.filt) == T)]
-    var.index = 1
-    
-    var.tmp = non.na.vars[1]
-    exc.vars= c('DIN')
-    ohs.master.filtered = ohs.master[ohs.master[,var.tmp] %in% targ.sample[,var.tmp],]
-    while (nrow(ohs.master.filtered) > 1  & var.index < length(non.na.vars) ) {
-      var.index = var.index+1
-      
-      var.tmp = non.na.vars[var.index]
-      if (nrow(ohs.master.filtered[ohs.master.filtered[,var.tmp] %in% targ.sample[,var.tmp],]) > 0 ){
-        ohs.master.filtered = ohs.master.filtered[ohs.master.filtered[,var.tmp] %in% targ.sample[,var.tmp],]
-        
-      }
-      
-    }
-    if (nrow(ohs.master.filtered) ==1 ) {
-      ohs.master.filtered$GRP_Id = targ.sample$GRP_Id
-      ohs.qx.pulled = rbind(ohs.qx.pulled,ohs.master.filtered)
-      
-    } else {
-      for (i in na.vars) {
-        ohs.master.filtered[,i] = ifelse(is.na(ohs.master.filtered[,i]) == T | ohs.master.filtered[,i] == '',NA,ohs.master.filtered[,i])
-        
-        if (nrow(ohs.master.filtered[is.na(ohs.master.filtered[,i]) == T,])  > 0) {
-          # ohs.master.filtered1=ohs.master.filtered
-          
-          ohs.master.filtered = ohs.master.filtered[is.na(ohs.master.filtered[,i]) == T,]
-          
-        }
-      }
-      if (nrow(ohs.master.filtered) == 1) {
-        ohs.master.filtered$GRP_Id = targ.sample$GRP_Id
-        ohs.qx.pulled = rbind(ohs.qx.pulled,ohs.master.filtered)
-      } else {
-        multiple.matches.remain = ohs.master.filtered
-        multiple.matches.remain$GRP_Id =  targ.sample$GRP_Id
-        ohs.qx.pulled.multimatch = rbind(ohs.qx.pulled.multimatch,multiple.matches.remain)
-      }
-      
-    }
-    
-  }
-  #setwd('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data')
-  #saveRDS(ohs.qx.pulled,'complete.qx.pulled.samples.RDS')
-  #saveRDS(ohs.qx.pulled.multimatch,'complete.qx.multimatched.samples.RDS')
-  #
-  
-}
-combined.info.filt$Event = ifelse(combined.info.filt$Cancer == 'Control',0,1)
-combined.info.all =rbind(combined.info.filt[,colnames(combined.info.filt) %in% colnames(canpath.master.control)],canpath.master.control)
-
-combined.info.all$Alcohol.Frequency = ifelse(combined.info.all$ALC_CUR_FREQ == '-7' | is.na(combined.info.all$ALC_CUR_FREQ) == T,'Never',
-                                             ifelse(combined.info.all$ALC_CUR_FREQ == '0','Former',
-                                                    ifelse(combined.info.all$ALC_CUR_FREQ == '1','< 1 per month',
-                                                           ifelse(combined.info.all$ALC_CUR_FREQ == '2','~1 per month',
-                                                                  ifelse(combined.info.all$ALC_CUR_FREQ == '3','2-3 per month',
-                                                                         ifelse(combined.info.all$ALC_CUR_FREQ == '4','1 per week',
-                                                                                ifelse(combined.info.all$ALC_CUR_FREQ == '5','2-3 per week',
-                                                                                       ifelse(combined.info.all$ALC_CUR_FREQ == '6','4-5 per week',
-                                                                                              ifelse(combined.info.all$ALC_CUR_FREQ == '7','6-7 per week','Not Reported')))))))))
-combined.info.all$Alcohol.Frequency = factor(combined.info.all$Alcohol.Frequency, levels = c('Never','Former','< 1 per month','~1 per month','2-3 per month','1 per week','2-3 per week','4-5 per week','6-7 per week'))
-
-combined.info.all$Alch.con.group = ifelse(combined.info.all$Alcohol.Frequency %in% c('Never'),'Never',
-                                          ifelse(combined.info.all$Alcohol.Frequency %in% c('Former'),'Former',
-                                                 ifelse(combined.info.all$Alcohol.Frequency %in% c('< 1 per month','~1 per month','2-3 per month'),'Infrequent',
-                                                        ifelse(combined.info.all$Alcohol.Frequency %in% c('1 per week','2-3 per week'),'Moderate',
-                                                               ifelse(combined.info.all$Alcohol.Frequency %in% c('4-5 per week','6-7 per week'),'Frequent','Other')))))
-combined.info.all$Alch.con.group  = factor(combined.info.all$Alch.con.group , levels = c('Never','Former','Infrequent','Moderate','Frequent'))
-
-combined.info.all$Smoking.Frequency = ifelse(combined.info.all$SMK_CIG_STATUS == 0, 'Never',
-                                             ifelse(combined.info.all$SMK_CIG_STATUS == 1, 'Former', 
-                                                    ifelse(combined.info.all$SMK_CIG_STATUS == 2, 'Occasional',
-                                                           ifelse(combined.info.all$SMK_CIG_STATUS == 3, 'Daily','Other'))))
-combined.info.all$Smoking.Frequency = factor(as.character(combined.info.all$Smoking.Frequency), levels=c('Never','Former','Occasional','Daily'))
-combined.info.all$Sex = ifelse(combined.info.all$SDC_GENDER == 1,'Male','Female')
-combined.info.all$Event= ifelse(combined.info.all$Cancer == 'Control',0,1)
-combined.info.all$censorship_time = abs(combined.info.all$censorship_time)
-combined.info.all = combined.info.all[!is.na(combined.info.all$Alch.con.group),]
-combined.info.all = combined.info.all[combined.info.all$censorship_time < 365*12,]
-combined.info.all$Family.history.prostate =ifelse(combined.info.all$DIS_CANCER_F_PROSTATE == 1 | 
-                                                    combined.info.all$DIS_CANCER_SIB_PROSTATE == 1 |
-                                                    combined.info.all$DIS_CANCER_CHILD_PROSTATE == 1, 'Family History','No Reported Family History')
-combined.info.all[is.na(combined.info.all$Family.history.prostate),'Family.history.prostate'] = 'No Reported Family History'
-combined.info.all$Family.history.prostate  = factor(as.character(combined.info.all$Family.history.prostate),levels = c('No Reported Family History','Family History'))
-#combined.info.all = merge(combined.info.all,ohs.qx.pulled[,c('GRP_Id',colnames(ohs.qx.pulled)[grepl('.*BMI.*',colnames(ohs.qx.pulled))])] )
-combined.info.all$age_group = ifelse(combined.info.all$SDC_AGE_CALC >= 30 & combined.info.all$SDC_AGE_CALC < 40, '30-40',
-                                     ifelse(combined.info.all$SDC_AGE_CALC >= 40 & combined.info.all$SDC_AGE_CALC < 50, '40-50',
-                                            ifelse(combined.info.all$SDC_AGE_CALC >= 50 & combined.info.all$SDC_AGE_CALC < 60, '50-60',
-                                                   ifelse(combined.info.all$SDC_AGE_CALC >= 60 & combined.info.all$SDC_AGE_CALC < 70, '60-70',
-                                                          ifelse(combined.info.all$SDC_AGE_CALC >= 70 & combined.info.all$SDC_AGE_CALC < 80, '70-80','80+')))))
-combined.info.all$age_group =factor(as.character(combined.info.all$age_group), levels = c('30-40','40-50','50-60','60-70','70-80','80+'))
-combined.info.all$bmi.group.short = ifelse(combined.info.all$BMI <= 18.5, 'Underweight',
-                                           ifelse(combined.info.all$BMI > 18.5 & combined.info.all$BMI <= 25,'Normal Weight',
-                                                  ifelse(combined.info.all$BMI > 25 & combined.info.all$BMI <= 30,'Overweight',
-                                                         ifelse(combined.info.all$BMI > 30,'Obese','Other'))))
-combined.info.all$bmi.group.long = ifelse(combined.info.all$BMI <= 18.5, 'Underweight',
-                                          ifelse(combined.info.all$BMI > 18.5 & combined.info.all$BMI <= 25,'Normal Weight',
-                                                 ifelse(combined.info.all$BMI > 25 & combined.info.all$BMI <= 30,'Overweight',
-                                                        ifelse(combined.info.all$BMI > 30 & combined.info.all$BMI <= 35,'Class 1 Obesity',
-                                                               ifelse(combined.info.all$BMI > 35 & combined.info.all$BMI <= 40, 'Class 2 Obesity', 'Class 3 Obesity')))))
-combined.info.all$bmi.group.short = factor(combined.info.all$bmi.group.short, levels = c('Normal Weight','Underweight','Overweight','Obese'))
-combined.info.all$bmi.group.long = factor(combined.info.all$bmi.group.long, levels =c('Normal Weight','Underweight','Overweight','Class 1 Obesity','Class 2 Obesity','Class 3 Obesity'))
-#saveRDS(combined.info.all,paste0('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/combined.ohs.full.qx.RDS'))
-#
-library(survival)
-library(ggfortify)
-library(survminer)
-#survival plots on cancer dx with grouped alcohol
-km_trt_fit <- survfit(Surv(censorship_time/365, Event) ~ Alch.con.group , data=combined.info.all)
-km_trt_fit.male <- survfit(Surv(censorship_time/365, Event) ~ Alch.con.group , data=combined.info.all[combined.info.all$Sex == 'Male',])
-km_trt_fit.female <- survfit(Surv(censorship_time/365, Event) ~ Alch.con.group , data=combined.info.all[combined.info.all$Sex == 'Female',])
-
-sex.goup.col = c("Female Cancer" ='#EF476F',"Female Control" = '#FAC7D3', "Male Cancer"  ='#26547C', "Male Control"='#B1CEE7')
-alc.group.col =c( Never = 'Grey',Former="#63A375",Infrequent="#EDC79B",Moderate="#D57A66",Frequent="#713E5A")
-diagnosis_time_colors = c("white","#440154FF","#414487FF","#2A788EFF","#22A884FF","#7AD151FF","#FDE725FF")
-cancer.col=c(Breast='#A40E4C',Control='#AF8D86', Prostate='#4C86A8', Pancreatic='#ACC3A6')
-sex.goup.col = c( "Female Cancer" ='#EF476F',"Female Control" = '#FAC7D3',    "Male Cancer"  ='#26547C', "Male Control"='#B1CEE7')
-sex.col = c(Female = '#FAC7D3', Male='#B1CEE7')
-
-
-plot1 = ggsurvplot(fit=km_trt_fit,conf.int = F,ylim = c(0.9,1),censor=F,legend = 'right', 
-                   palette = unname(alc.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "Alcohol Frequency",
-                   legend.labs = c("Never (n=29,415)", "Former (n=17,703)","1 or less drinks per month (n=57,520)","1-3 drinks per week (n=88,691)","4+ drinks per week (n=62,381)"),
-                   xlab='Time to Cancer Event (Years)',
-                   ylab='Cancer-Free Fraction'
-) 
-
-plot2 = ggsurvplot(fit=km_trt_fit.male, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(alc.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "Alcohol Frequency",
-                   legend.labs = c("Never\n(n=11,021)", "Former\n(n=6,685)","Infrequent\n(n=31,682)","Moderate\n(n=37,131)","Frequent\n(n=30,769)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction') 
-
-plot3 = ggsurvplot(fit=km_trt_fit.female, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(alc.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "Alcohol Frequency",
-                   legend.labs = c("Never\n(n=18,397)", "Former\n(n=11,040)","Infrequent\n(n=75,600)","Moderate\n(n=51,621)","Frequent\n(n=31,668)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction')  
-
-plot.list = list(plot1,plot2,plot3)
-setwd(figdir)
-#png(paste0('alc.only.cph.png'),height= 350, width= 600,type = 'cairo')
-pdf(paste0('alc.only.cph.pdf'),height=5 , width= 4.5)
-
-print(plot1)
-dev.off()
-
-png(paste0('alc.only.cph.male.png'),height= 350, width= 600,type = 'cairo')
-print(plot2)
-dev.off()
-
-
-#survival plots on cancer dx with grouped smoking
-
-age.group.col =c('30-40'='#CBF7ED','40-50'='#8EA8C3','50-60'='#406E8E','60-70'='#23395B','70-80'='#161925')
-
-km_trt_fit.male <- survfit(Surv(censorship_time/365, Event) ~ age_group , data=combined.info.all[combined.info.all$Sex == 'Male',])
-
-plot2 = ggsurvplot(fit=km_trt_fit.male, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(age.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "Age Group",
-                   legend.labs = c("30-40\n(n=11,771)", "40-50\n(n=15,024)","50-60\n(n=18,361)","60-70\n(n=17,211)","70-80\n(n=3670)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction') 
-
-
-#plot.list = list(plot1,plot2,plot3)
-setwd(figdir)
-
-png(paste0('age.only.cph.male.png'),height= 350, width= 600,type = 'cairo')
-print(plot2)
-dev.off()
-
-###bmi short
-
-
-bmi.short.group.col =c('Normal Weight' = 'grey','Underweight'='#C0F0B9','Overweight'='#5FB49C','Obese'='#414288')
-
-km_trt_fit.male.bmi.short <- survfit(Surv(censorship_time/365, Event) ~ bmi.group.short , data=combined.info.all[combined.info.all$Sex == 'Male',])
-
-plot2 = ggsurvplot(fit=km_trt_fit.male.bmi.short, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(bmi.short.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "BMI",
-                   legend.labs = c("Normal Weight\n(n=47,018)", "Underweight\n(n=1,512)","Overweight\n(n=49,375)","Obese\n(n=33,705)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction') 
-
-
-#plot.list = list(plot1,plot2,plot3)
-setwd(figdir)
-
-png(paste0('bmi.short.only.cph.male.png'),height= 350, width= 600,type = 'cairo')
-print(plot2)
-dev.off()
-
-
-bmi.long.group.col =c('Normal Weight' = 'grey','Underweight'='#C0F0B9','Overweight'='#5FB49C','Class 1 Obesity'='#414288','Class 2 Obesity'='#682D63','Class 3 Obesity'='#0A1128')
-
-km_trt_fit.male.bmi.long <- survfit(Surv(censorship_time/365, Event) ~ bmi.group.long , data=combined.info.all[combined.info.all$Sex == 'Male',])
-
-plot2 = ggsurvplot(fit=km_trt_fit.male.bmi.long, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(bmi.long.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "BMI",
-                   legend.labs = c("Normal Weight\n(n=47,018)", "Underweight\n(n=1,512)","Overweight\n(n=49,375)","Class 1 Obesity\n(n=21,482)","Class 2 Obesity\n(n=7,640)","Class 3 Obesity\n(n=4,584)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction') 
-
-
-#plot.list = list(plot1,plot2,plot3)
-setwd(figdir)
-
-png(paste0('bmi.long.only.cph.male.png'),height= 350, width= 600,type = 'cairo')
-print(plot2)
-dev.off()
-
-
-#survival plots on cancer dx with grouped smoking
-km_trt_fit.male <- survfit(Surv(censorship_time/365, Event) ~ Smoking.Frequency , data=combined.info.all[combined.info.all$Sex == 'Male',])
-
-smk.group.col =c( Never = 'grey',Former="#C99DA3",Occasional="#996888",Daily="#5E4955")
-
-
-plot2 = ggsurvplot(fit=km_trt_fit.male, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(smk.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "Smoking Frequency",
-                   legend.labs = c("Never\n(n=31,885)", "Former\n(n=21,360)","Occasional\n(n=1,903)","Daily\n(n=6,064)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction') 
-
-
-#plot.list = list(plot1,plot2,plot3)
-setwd(figdir)
-
-png(paste0('smk.only.cph.male.png'),height= 350, width= 600,type = 'cairo')
-print(plot2)
-dev.off()
-
-
-#survival plots on cancer dx with grouped family history
-km_trt_fit.male <- survfit(Surv(censorship_time/365, Event) ~ Family.history.prostate , data=combined.info.all[combined.info.all$Sex == 'Male',])
-
-fh.group.col =c( 'No Reported Family History' = 'grey','Family History' ="#564D80")
-
-
-plot2 = ggsurvplot(fit=km_trt_fit.male, conf.int = F,ylim = c(0.9,1),censor=F,legend = 'bottom',
-                   palette = unname(fh.group.col),
-                   ggtheme = theme_bw(),
-                   legend.title = "Family History",
-                   legend.labs = c("No Reported Family History\n(n=61,306)", "Family History\n(n=4,731)"),
-                   xlab='Time to Cancer Event',
-                   ylab='Cancer-Free Fraction') 
-
-
-#plot.list = list(plot1,plot2,plot3)
-setwd(figdir)
-
-png(paste0('famhist.only.cph.male.png'),height= 350, width= 600,type = 'cairo')
-print(plot2)
-dev.off()
-#calculating HR
-#smk
-km_trt_fit.male.smk <- coxph(Surv(censorship_time/365, Event) ~ Smoking.Frequency , data=combined.info.all[combined.info.all$Sex == 'Male',])
-tmp2 = summary(km_trt_fit.male.smk)
-smk.hr.df = data.frame(Var = rep('Smoking Frequency',4),
-                       Var.group = c('Never','Former','Occasional','Daily'),
-                       HR = c(1,tmp2$coefficients[4:6]),
-                       HRL =c(1,tmp2$conf.int[7:9]),
-                       HRU =c(1,tmp2$conf.int[10:12]) , 
-                       SE=c(0,tmp2$coefficients[7:9]),
-                       pvalue = c(1,tmp2$coefficients[13:15]))
-#fh
-km_trt_fit.male.fh <- coxph(Surv(censorship_time/365, Event) ~ Family.history.prostate , data=combined.info.all[combined.info.all$Sex == 'Male',])
-tmp2 = summary(km_trt_fit.male.fh)
-fh.hr.df = data.frame(Var = rep('Family History',2),
-                      Var.group = c('No Reported Family History','Reported Family History'),
-                      HR = c(1,tmp2$coefficients[2]),
-                      HRL =c(1,tmp2$conf.int[3]),
-                      HRU =c(1,tmp2$conf.int[4]) , 
-                      SE=c(0,tmp2$coefficients[3]),
-                      pvalue = c(1,tmp2$coefficients[5]))
-
-#bmi
-
-km_trt_fit.male.bmi.short <- coxph(Surv(censorship_time/365, Event) ~ bmi.group.short , data=combined.info.all[combined.info.all$Sex == 'Male',])
-km_trt_fit.male.bmi.long <- coxph(Surv(censorship_time/365, Event) ~ bmi.group.long , data=combined.info.all[combined.info.all$Sex == 'Male',])
-
-tmp2 = summary(km_trt_fit.male.bmi.short)
-bmi.short.hr.df = data.frame(Var = rep('BMI Short',4),
-                             Var.group =levels(combined.info.all$bmi.group.short),
-                             HR = c(1,tmp2$coefficients[4:6]),
-                             HRL =c(1,tmp2$conf.int[7:9]),
-                             HRU =c(1,tmp2$conf.int[10:12]) , 
-                             SE=c(0,tmp2$coefficients[7:9]),
-                             pvalue = c(1,tmp2$coefficients[13:15]))
-tmp2 = summary(km_trt_fit.male.bmi.long)
-bmi.long.hr.df = data.frame(Var = rep('BMI Long',6),
-                            Var.group =levels(combined.info.all$bmi.group.long),
-                            HR = c(1,tmp2$coefficients[6:10]),
-                            HRL =c(1,tmp2$conf.int[11:15]),
-                            HRU =c(1,tmp2$conf.int[16:20]) , 
-                            SE=c(0,tmp2$coefficients[11:15]),
-                            pvalue = c(1,tmp2$coefficients[21:25]))
-
-#age
-km_trt_fit.male.age <- coxph(Surv(censorship_time/365, Event) ~ SDC_AGE_CALC , data=combined.info.all[combined.info.all$Sex == 'Male',])
-tmp2 = summary(km_trt_fit.male.age)
-age.hr.df = data.frame(Var = rep('Age',1),
-                       Var.group = c('Age'),
-                       HR = c(tmp2$coefficients[2]),
-                       HRL =c(tmp2$conf.int[3]),
-                       HRU =c(tmp2$conf.int[4]) , 
-                       SE=c(0,tmp2$coefficients[3]),
-                       pvalue = c(tmp2$coefficients[5]))
-
-#alc
-km_trt_fit.male.alc <- coxph(Surv(censorship_time/365, Event) ~ Alch.con.group , data=combined.info.all[combined.info.all$Sex == 'Male',])
-tmp2 = summary(km_trt_fit.male.alc)
-alc.hr.df = data.frame(Var = rep('Alcohol Frequency',5),
-                       Var.group = c('Never','Former','Infrequent','Moderate','Frequent'),
-                       HR = c(1,tmp2$coefficients[5:8]),
-                       HRL =c(1,tmp2$conf.int[9:12]),
-                       HRU =c(1,tmp2$conf.int[13:16]) , 
-                       SE=c(0,tmp2$coefficients[9:12]),
-                       pvalue = c(1,tmp2$coefficients[17:20]))
-
-#methylation_score
-mean.perf.df.targ.tmp = pred.df.targ
-y.index = 0.18#score.cutoff.prostate
-mean.perf.df.targ.tmp.merged = merge(mean.perf.df.targ.tmp, all.sample.info[,c('GRP_Id','censorship_time')],by='GRP_Id')
-mean.perf.df.targ.tmp.merged$Event=ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1)
-mean.perf.df.targ.tmp.merged$group = mean.perf.df.targ.tmp.merged$reported
-mean.perf.df.targ.tmp.merged = mean.perf.df.targ.tmp.merged[!is.na(mean.perf.df.targ.tmp.merged$methylation_score),]
-mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score > y.index,'High Predicted Risk','Low Predicted Risk')
-mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
-mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
-
-male.ohs.qx.weighting = function(subject,combined.info.all) {
-  #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.prostate','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
-  combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
-  combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-  combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-  #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-  #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
-  age.groups =  unique(combined.info.all.male$age_group)
-  fh.groups = unique(combined.info.all.male$Family.history.prostate)
-  alc.groups = unique(combined.info.all.male$Alch.con.group)
-  smk.groups = unique(combined.info.all.male$Smoking.Frequency)
-  control.samples = subject[subject$reported == 'Control',]
-  cancer.samples = subject[subject$reported != 'Control',]
-  
-  control.samples = combined.info.all[combined.info.all$GRP_Id %in% control.samples$GRP_Id,]
-  cancer.samples = combined.info.all[combined.info.all$GRP_Id %in% cancer.samples$GRP_Id,]
-  
-  ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
-  control.weight.samples = NULL
-  #{
-  #for (smk in smk.groups )
-  for (age in age.groups ) {
-    for (fh in fh.groups ){
-      for (alc in alc.groups) {
-        targ.control.cohort = control.samples[control.samples$age_group == age &
-                                                control.samples$Family.history.prostate == fh &
-                                                control.samples$Alch.con.group == alc,]# &control.samples$Smoking.Frequency == smk 
-        if (nrow(targ.control.cohort)>0){
-          cohort.freq =  ohs.pop.samples[ohs.pop.samples$age_group == age &
-                                           ohs.pop.samples$Family.history.prostate == fh &
-                                           ohs.pop.samples$Alch.con.group == alc  ,]
-          
-          targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
-          
-          control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
-        }
-        
-        
-      }
-      
-    }
-  }
-  cancer.samples$weight=1
-  return.df = rbind(control.weight.samples,cancer.samples)
-  return.df = return.df[order(match(return.df$GRP_Id,subject$GRP_Id)),]
-  return(return.df$weight)
-  
-}
-mean.perf.df.targ.tmp.merged = unique(mean.perf.df.targ.tmp.merged)
-weighting=male.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
-km_trt_fit.male.medip <- coxph(Surv(censorship_time/365, Event) ~ Risk.group , data=mean.perf.df.targ.tmp.merged,weights = weighting)
-
-tmp2 = summary(km_trt_fit.male.medip)
-methscore.hr.df = data.frame(Var = rep('cfDNA Methylation Risk Score',2),
-                             Var.group = c('Low Predicted Risk','High Predicted Risk'),
-                             HR = c(1,tmp2$coefficients[2]),
-                             HRL =c(1,tmp2$conf.int[3]),
-                             HRU =c(1,tmp2$conf.int[4]) ,
-                             SE=c(0,tmp2$coefficients[3]),
-                             pvalue = c(1,tmp2$coefficients[6]))
-
-combined.hr =rbind(smk.hr.df, alc.hr.df,fh.hr.df,age.hr.df, methscore.hr.df,bmi.long.hr.df,bmi.short.hr.df)
-#saveRDS(combined.hr,'validation.covariate.hr.RDS')
-#combined.hr = readRDS('/Users/ncheng/Desktop/ncheng/Desktop/Lab Work/Manuscripts/OHS_cancer_risk/figures/ml.predictions/discovery/prostate/discovery.covariate.hr.RDS')
-#validation.hr = readRDS('/Users/ncheng/Desktop/ncheng/Desktop/Lab Work/Manuscripts/OHS_cancer_risk/figures/ml.predictions/discovery/prostate/validation.covariate.hr.RDS')
-combined.hr = readRDS('/Users/ncheng/Desktop/ncheng/Desktop/Lab Work/Manuscripts/OHS_cancer_risk/figures/ml/cur/discovery/prostate/discovery.covariate.hr.RDS')
-validation.hr = readRDS('/Users/ncheng/Desktop/ncheng/Desktop/Lab Work/Manuscripts/OHS_cancer_risk/figures/ml/cur/discovery/prostate/validation.covariate.hr.RDS')
-validation.hr$Var = ifelse(grepl('.*Methylation.*',validation.hr$Var) == T,paste0(validation.hr$Var,' (Validation)'),validation.hr$Var)
-
-#var.levels = as.character(levels(combined.hr$Var))
-combined.hr$Var = as.character(combined.hr$Var)
-combined.hr$Var = ifelse(grepl('.*Methylation.*',combined.hr$Var) == T,paste0(combined.hr$Var,' (Discovery)'),combined.hr$Var)
-combined.hr = rbind(combined.hr,validation.hr[validation.hr$Var == 'cfDNA Methylation Risk Score (Validation)',])
-combined.hr$Var = gsub(' \\(Discovery)','\n(Discovery)',combined.hr$Var)
-combined.hr$Var = gsub(' \\(Validation)','\n(Validation)',combined.hr$Var)
-combined.hr$Var = gsub('\n',' ',combined.hr$Var)
-targ.levels = c('Age','Family History','Alcohol Frequency','cfDNA Methylation Risk Score (Discovery)',"cfDNA Methylation Risk Score (Validation)")
-combined.hr = combined.hr[combined.hr$Var %in% targ.levels,]
-combined.hr$Var = factor(combined.hr$Var,levels = targ.levels)
-#setwd('/Users/ncheng/Desktop/ncheng/Desktop/Lab Work/Manuscripts/OHS_cancer_risk/figures/ml.predictions/discovery/prostate/')
-setwd('/Users/ncheng/Desktop/ncheng/Desktop/Lab Work/Manuscripts/OHS_cancer_risk/figures/ml/cur/discovery/prostate')
-combined.hr$SE1 = (combined.hr$HR - combined.hr$HRL)/1.96
-combined.hr$est.log = log(combined.hr$HR)
-combined.hr = combined.hr[combined.hr$Var != 'cfDNA Methylation Risk Score (Discovery)',]
-
-require("survival")
-library(ggforestplot)
-library(ggplot2)
-plot1 =ggforestplot::forestplot(
-  df = combined.hr,
-  name = Var.group,
-  estimate = est.log,
-  pvalue =pvalue,
-  se =SE,
-  logodds=T,
-  psignif = 0.06,
-  xlab='Hazard Ratio (95% CI)',
-  ylab='',
-  #xlab = "1-SD increment in cardiometabolic trait\nper 1-SD increment in biomarker concentration",
-  colour = Var
-) +
-  ggforce::facet_col(
-    facets = ~Var,
-    scales = "free_y",
-    space = "free"
-  ) + 
-  #scale_x_continuous(breaks = seq(0,16,1),limits = c(0.00001,15)) +
-  theme_bw()+
-  theme(
-    legend.position='none',
-    text = element_text(size=8),
-    axis.text=element_text(size=8, face = "bold"),
-    axis.title=element_text(size=8,face="bold"),
-    strip.background = element_rect(fill = "white"))+scale_color_manual(values =c('#143642','#0F8B8D','#EC9A29','#A8201A','#A270D6'))
-
-print(plot1)
-png('test.png',height=1500,width=1600,res=300)
-print(plot1)
-dev.off()
-scipen(options = 1000)
-model <- coxph(Surv(censorship_time/365, Event) ~ Risk.group +  Alch.con.group+SDC_AGE_CALC+Family.history.prostate+Smoking.Frequency, 
-               data=mean.perf.df.targ.tmp,
-               weights = weightsf.males(mean.perf.df.targ.tmp))
-
-model <- coxph( Surv(time, status) ~ sex + rx + adhere,
-                data = colon )
-ggforest(model)
-
+combined.performance = list(return.df.final.auroc,return.df.final.auct) #performance stratified by subgroups
 
 
