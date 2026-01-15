@@ -7,14 +7,6 @@ library(UpSetR)
 library(Hmisc)
 options(scipen=99990)
 #####custom functions to be used #####
-targ.filt = function(x) {
-  a = x[x %in% cpg_count$window]
-  a = a[!a %in% blacklist$window]
-  a =a[!grepl('chrX|chrY',a)]
-  #a = a[a %in% feature.filt[['brca']]]
-  #a = a[!a %in% feature.filt[['blood']]]
-  return(a)
-}
 illumina.450k.array.annotation= function(targ.windows,HM450.hg38.annotation) {
   #convert targeted windows to grange
   tmp = data.frame(chr = gsub(':.*','',targ.windows),
@@ -72,8 +64,8 @@ z.score.permutation = function(cancer_blood_dmr_sig, predx.dmrs.sig.hyper,backgr
     n.size = length(predx.hm450.dmrs)
     #n.size=length(predx.dmrs.sig.hyper$window)
     print(n.size)
-    background.windows = cpg.window.annotated[cpg.window.annotated$window %in% background.hm450 ,]
-    cpg.window.annotated.sig.regions = cpg.window.annotated[cpg.window.annotated$window %in% predx.hm450.dmrs,]
+    background.windows = cpg_count[cpg_count$window %in% background.hm450 ,]
+    cpg.window.annotated.sig.regions = cpg_count[cpg_count$window %in% predx.hm450.dmrs,]
     n.features = length(unique(cpg.window.annotated.sig.regions))
     search.space = unique(background.windows)
     cpg_count$window = as.character(cpg_count$window)
@@ -172,8 +164,7 @@ pancancer.permutation = function(predx.dmrs.sig,background,others = F){
   
   #all
   for (c in cancer.groups) {
-    #cancer.dmr.dir='/.mounts/labs/awadallalab/private/ncheng/methylation_analysis/tissue_methylome_profiles/lm.dmp/'
-    targ.cancer.dmr = readRDS(paste0(c,'.dmps.RDS')) #upload dmps
+    targ.cancer.dmr = readRDS(paste0(c,'.dmps.RDS')) 
     d1=c('cfDNA Hyper, Cancer Hyper','cfDNA Hypo, Cancer Hypo')
     
     print(c)
@@ -594,34 +585,29 @@ permutation.plot.manuscript = function(p.threshold=0.05, effect=0.1,name,enhance
 
 ####running 450k array + cfDNA MeDIP DMR enrichment/permutation analysis####
 #setting background regions for permutation analysis
-cpg.window.annotated = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/gene.annotations/genomic.annotations.window.300.RDS') #upload remove sex chr and blacklist regions
-cpg_count = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/cpg_sites/cpg_site_positions/window_count/hg38_cpg_window_300_count.RDS') #upload #number of cpg sites across 300bp regions
-cpg_count$window = as.character(cpg_count$window)
-cpg_count = cpg_count[cpg_count$count >= 5,] #upload version with 5+ CpGs
+cpg_count = readRDS('hg38_cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
 background=cpg_count$window
 cpg.count.split = split(cpg_count,cpg_count$count)
 
 #setting directories
-savedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/prostate.cancer.cv/regulatory.regions.v5.ageadjusted/1/genhancer.1000/'
-dmrdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/prostate.cancer.cv/regulatory.regions.v5.ageadjusted/1/'
+savedir='/directory/to/save/'
 figdir='/path/to/figures/'
 #loading files
-#450k array annotation #upload
-HM450.hg38.annotation = readRDS('/.mounts/labs/awadallalab/private/ncheng/annotation_files/meth_array/hg38/HM450.hg38.annotation.window300.RDS')
+#450k array annotation
+HM450.hg38.annotation = readRDS('HM450.hg38.annotation.window300.RDS')
 HM450.hg38.annotation.base=HM450.hg38.annotation
 
 #tissue methylation array dmrs
 
 #loading prostate cancer tissue methylation array differentially methylated positions previously computed using a linear model
-cancer.dmr.dir='/.mounts/labs/awadallalab/private/ncheng/methylation_analysis/tissue_methylome_profiles/lm.dmp/'
 tcga.dmr.list = list()
-for (cancer in c('Prostate','Breast')) {
-  targ.cancer.dmr = readRDS(paste0(cancer.dmr.dir,cancer,'.dmps.RDS')) #upload add capitalization to cancers
+for (cancer in c('prostate','breast')) {
+  targ.cancer.dmr = readRDS(paste0(cancer,'.dmps.RDS')) 
   cancer_blood_dmr_sig = targ.cancer.dmr[as.numeric(targ.cancer.dmr$padjust) < 0.05 & targ.cancer.dmr$comparison == 'cancer.blood',]
   cancer_normal_dmr_sig = targ.cancer.dmr[as.numeric(targ.cancer.dmr$padjust) < 0.05 & targ.cancer.dmr$comparison == 'cancer.norm',]
   normal_blood_dmr_sig = targ.cancer.dmr[as.numeric(targ.cancer.dmr$padjust) < 0.05 &  targ.cancer.dmr$comparison == 'norm.blood',]
   
-  tcga.dmr.list[[cancer]] = list('Cancer.Blood' = cancer_blood_dmr_sig,
+  tcga.dmr.list[[capitalize(cancer)]] = list('Cancer.Blood' = cancer_blood_dmr_sig,
                                        'Cancer.Normal' = cancer_normal_dmr_sig,
                                        'Normal.Blood' = normal_blood_dmr_sig)
 
