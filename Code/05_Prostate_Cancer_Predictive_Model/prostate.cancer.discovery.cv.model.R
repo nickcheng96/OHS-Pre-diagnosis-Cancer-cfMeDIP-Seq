@@ -358,14 +358,10 @@ for (fold in foldno)   {
                                            stat.test = paste0('deseq.',mat))
             #test fold performance
             perf.df = res.df.all[[1]] 
-            perf.df$mat = mat
-            perf.df$comparison = i
             perf.df$direction = dir
 
             #feature weightings
             perf.df = res.df.all[[2]] 
-            perf.df$mat = mat
-            perf.df$comparison = i
             perf.df$direction = dir
 
             complete.res.base= rbind(complete.res.base,perf.df)
