@@ -128,9 +128,11 @@ aml_inc <- function(gender, x){
 
 all_surv <- function(gender, age1, age2){
   if(gender==1) {
+    #if male
     s <- all_cause_mortality_CAN$lx
     
   } else {
+    #if female
     s <- all_cause_mortality_CAN$lx.1
     
   }
@@ -143,22 +145,6 @@ all_surv <- function(gender, age1, age2){
 aml_inc_cr <- Vectorize(function(gender, age1, age2) sum(diff(aml_inc(gender, seq(age1,age2,1) ))*all_surv(gender, age1, seq(age1,age2-1,1)) ), c("gender","age1","age2"))
 
 
-
-weightsf.females<-function (matched_samples){
-  matched_samples_temp<- matched_samples[matched_samples$censorship_time > 0 | matched_samples$group %in% c('control','Control'),]#[na.omit(match(matched_samples$GRP_Id ,ids)),]
-  latest.linkage=  as.Date('2019-01-01',format= '%Y-%m-%d')
-  matched_samples_temp$gender= 1
-  control.incidence = matched_samples_temp[matched_samples_temp$group %in% c('control','Control'),]
-  
-  expected_rate_breast_cr <- mean(aml_inc_cr(matched_samples_temp$gender, matched_samples_temp$SDC_AGE_CALC, matched_samples_temp$SDC_AGE_CALC+pmax(1, matched_samples_temp$censorship_time/365))[matched_samples_temp$group %in% c('control','Control')])
-  
-  n_total_breast <- sum(!matched_samples_temp $group %in% c("Control",'control'))/expected_rate_breast_cr
-  n_total_breast
-  weights <- rep(1, nrow(matched_samples_temp))
-  weights[matched_samples_temp$group %in% c("Control",'control')] <- n_total_breast/sum(matched_samples_temp$group %in% c("Control",'control'))
-  
-  return(weights)
-}
 weightsf.males<-function (matched_samples){
   matched_samples_temp<- matched_samples[matched_samples$censorship_time > 0 | matched_samples$group %in% c('control','Control'),]#[na.omit(match(matched_samples$GRP_Id ,ids)),]
   latest.linkage=  as.Date('2019-01-01',format= '%Y-%m-%d')
@@ -176,8 +162,8 @@ weightsf.males<-function (matched_samples){
 }
 
 ####results analysis####
-sample.info = readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/discovery.set3.samples.RDS') #upload
-
+sample.info = readRDS('sample.info.RDS') 
+sample.info = sample.info[sample.info$Sex == 'Male',]
 wkdir='/wkdir/'
 marker.list = c('silencer')
 
@@ -276,12 +262,10 @@ score.cutoff.prostate = score.cutoff$optimal_cutpoint
 
 
 ####prostate cancer plotting#####
-gleason.score = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/pathology_records/prostate/gleason.score.RDS') #upload
-combined.info.all = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/combined.ohs.full.qx.RDS') #upload
+combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
 pred.df.targ = overall.perf.targ.prostate
 name = paste0(figdir,'prad.top');
 merged.df.all= sample.inof;
-gleason.score = gleason.score;
 score.cutoff=score.cutoff.prostate;
 dx.all = F; 
 cutpoint.use =T; #using Youden's cutoff
@@ -317,12 +301,7 @@ gs.plot= T #plotting gleason scores
   #sample.info.filt.pretime = merged.df.all
   pred.df.targ.collapse.all = pred.df.targ
   pred.df.targ.collapse.all$model = gsub('.new','',pred.df.targ.collapse.all$model)
-  pred.df.targ.collapse.all= merge(pred.df.targ.collapse.all, merged.df.all[,c('GRP_Id','ResearchId')],by= colnames(merged.df.all)[colnames(merged.df.all) %in% colnames(pred.df.targ.collapse.all)])
-  pred.df.targ.collapse.all = merge(pred.df.targ.collapse.all,gleason.score[,c('GRP_Id','Gleason.score')],by='ResearchId',all.x=T )
-  pred.df.targ.collapse.all[is.na(pred.df.targ.collapse.all$Gleason.score),'Gleason.score'] = 'Not Reported'
-  pred.df.targ.collapse.all$Gleason.score = ifelse(as.character(pred.df.targ.collapse.all$reported) == 'Cancer',pred.df.targ.collapse.all$Gleason.score,
-                                                   ifelse(as.character(pred.df.targ.collapse.all$reported) == 'Control','Control','Not Reported'))
-  
+
   pred.df.targ.collapse.list = split(pred.df.targ.collapse.all,pred.df.targ.collapse.all$model)
   pred.df.targ.collapse.list = lapply(pred.df.targ.collapse.list, function(x) {
     auc.plot.all = tpr.fpr.calc(x)
@@ -345,7 +324,7 @@ gs.plot= T #plotting gleason scores
         x$event=ifelse(x[,group] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,group] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        male.weights= weightsf.males(x)
         
         ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = male.weights)#
         return(c(ci$c.index,ci$lower,ci$upper))
@@ -509,7 +488,7 @@ gs.plot= T #plotting gleason scores
         x$event=ifelse(x[,'reported'] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        male.weights= weightsf.males(x)
         return.roct = NULL
         targ.times = seq(30,3000,100)
         targ.times = targ.times[targ.times < max(x$censorship_time)]
@@ -626,7 +605,7 @@ gs.plot= T #plotting gleason scores
         x$event=ifelse(x[,group] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,group] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        male.weights= weightsf.males(x)
         
         ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = male.weights)#
         return(c(ci$c.index,ci$lower,ci$upper))

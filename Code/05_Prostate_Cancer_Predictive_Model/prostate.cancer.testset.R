@@ -1,10 +1,35 @@
-########
-library(ggplot2)
-library(cutpointr)
-library(caret)
-library(glmnet)
-library(ROCR)
+#!/usr/bin/env Rscript
+####loading packages#####
 library(plyr)
+library(ROCR)
+library(rstatix)
+library(DESeq2)
+library(matrixTests)
+library(gridExtra)
+library(caret)
+library(pROC)
+library(stringr)
+library(parallel)
+library(survival)
+library(ncvreg)
+library(survminer)
+library(RColorBrewer)
+library(cutpointr)
+library(dplyr)
+library(plyr)
+library(ggplot2)
+library(ggh4x)
+library(survcomp)
+library(cenROC)
+
+options(expressions = 5e5)
+library(DESeq2)
+library("BiocParallel")
+ncores = 10
+register(MulticoreParam(ncores))
+
+
+####functions to be used in analysis####
 auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
   tmp = prediction_table
   tmp = tmp[order(-tmp$methylation_score),]
@@ -14,17 +39,141 @@ auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
   AUC=perf_AUC@y.values[[1]]
   return(AUC)
 }
+
+tpr.fpr.calc = function(x){
+  tmp1 = x
+  tmp1$f = as.integer(ifelse(tmp1$reported == 'Control', 0, 1))
+  tmp1$f.str = tmp1$reported
+  
+  tmp1 = tmp1[order(-tmp1$methylation_score),]
+  case_no = nrow(tmp1[tmp1$reported!='Control',])
+  control_no = nrow(tmp1[tmp1$reported=='Control',])
+  auc.df =data.frame(matrix(nrow = 0, ncol=3))
+  for(l in 1:nrow(tmp1)) {
+    x = tmp1[1:l,]
+    case_cum = nrow(x[x$reported!='Control',])
+    control_cum = nrow(x[x$reported=='Control',])
+    tpr = case_cum/case_no
+    fpr = control_cum/control_no
+    return.tmp = data.frame(l,tpr,fpr)
+    auc.df = rbind(auc.df, return.tmp)
+  }
+  base = data.frame(l = 0, tpr = 0, fpr = 0)
+  auc.df = rbind(base,auc.df)
+  return(auc.df)
+  #auc.df = auc.df[auc.df$fpr > 0,]
+}
+
+all_cause_mortality_CAN<-structure(list(x = c(0, 2.5, 7, 12, 17, 22, 27, 32, 37, 42, 47, 
+                                              52, 57, 62, 67, 72, 77, 82, 87, 90), qx = c(0.0047, 2e-04, 1e-04, 
+                                                                                          1e-04, 5e-04, 8e-04, 0.001, 0.0011, 0.0013, 0.0015, 0.0023, 0.0036, 
+                                                                                          0.0056, 0.0088, 0.0134, 0.0216, 0.0346, 0.061, 0.1089, 0.2163
+                                              ), lx = c(1e+05, 97650, 97552.35, 97503.573825, 97454.8220380875, 
+                                                        97211.1849829923, 96822.3402430603, 96338.228541845, 95808.3682848649, 
+                                                        95185.6138910133, 94471.7217868307, 93385.2969862821, 91704.361640529, 
+                                                        89136.6395145942, 85214.6273759521, 79505.2473417633, 70918.6806288528, 
+                                                        58649.7488800613, 40761.5754716426, 18566.8976273332), dx = c(470, 
+                                                                                                                      19.53, 9.755235, 9.7503573825, 48.7274110190437, 77.7689479863938, 
+                                                                                                                      96.8223402430603, 105.97205139603, 124.550878770324, 142.77842083652, 
+                                                                                                                      217.284960109711, 336.187069150616, 513.544425186962, 784.402427728429, 
+                                                                                                                      1141.87600683776, 1717.31334258209, 2453.78634975831, 3577.63468168374, 
+                                                                                                                      4438.93556886188, 4016.01995679217), qx.1 = c(0.004, 1e-04, 1e-04, 
+                                                                                                                                                                    1e-04, 2e-04, 3e-04, 4e-04, 5e-04, 6e-04, 9e-04, 0.0015, 0.0023, 
+                                                                                                                                                                    0.0037, 0.0058, 0.0087, 0.0142, 0.0232, 0.0416, 0.0768, 0.179
+                                                                                                                      ), lx.1 = c(1e+05, 98000, 97951, 97902.0245, 97853.07348775, 
+                                                                                                                                  97755.2204142622, 97608.5875836408, 97413.3704084736, 97169.8369824524, 
+                                                                                                                                  96878.327471505, 96442.3749978832, 95719.0571853991, 94618.288027767, 
+                                                                                                                                  92867.8496992533, 90174.682057975, 86252.0833884531, 80128.1854678729, 
+                                                                                                                                  70833.3159535996, 56099.9862352509, 34557.5915209146), dx.1 = c(400, 
+                                                                                                                                                                                                  9.8, 9.7951, 9.79020245, 19.57061469755, 29.3265661242787, 39.0434350334563, 
+                                                                                                                                                                                                  48.7066852042368, 58.3019021894714, 87.1904947243545, 144.663562496825, 
+                                                                                                                                                                                                  220.153831526418, 350.087665702738, 538.633528255669, 784.519733904382, 
+                                                                                                                                                                                                  1224.77958411603, 1858.97390285465, 2946.66594366975, 4308.47894286727, 
+                                                                                                                                                                                                  6185.80888224371)), class = "data.frame", row.names = c(50436L, 
+                                                                                                                                                                                                                                                          50442L, 50448L, 50454L, 50460L, 50466L, 50472L, 50478L, 50484L, 
+                                                                                                                                                                                                                                                          50490L, 50496L, 50502L, 50508L, 50514L, 50520L, 50526L, 50532L, 
+                                                                                                                                                                                                                                                          50538L, 50544L, 50550L))
+
+age_incidence<-structure(list(Age.group = c("0 to 04", "05 to 09", "10 to 14", 
+                                            "15 to 19", "20 to 24", "25 to 29", "30 to 34", "35 to 39", "40 to 44", 
+                                            "45 to 49", "50 to 54", "55 to 59", "60 to 64", "65 to 69", "70 to 74", 
+                                            "75 to 79", "80 to 84", "85 to 89", "90+"), PanB = c(0, 0, 0, 
+                                                                                                 0, 0, 0, 0.8, 1.3, 1.6, 5, 9.7, 15.1, 27.1, 40.9, 56.5, 71.4, 
+                                                                                                 75, 77, 56.2), PanM = c(0, 0, 0, 0, 0, 0.5, 0.5, 1.1, 2.2, 5.9, 
+                                                                                                                         9.8, 19.2, 31.1, 46.7, 66.7, 79.2, 82, 85.1, 64.4), PanF = c(0, 
+                                                                                                                                                                                      0, 0, 0.6, 0, 0, 1, 1, 1.1, 4.2, 10.2, 11.1, 23.3, 35.4, 47, 
+                                                                                                                                                                                      65.8, 71, 71.6, 55.7), LungB = c(0, 0, 0.3, 0, 0.5, 0.5, 1.3, 
+                                                                                                                                                                                                                       1.9, 4.7, 10, 32.1, 71.6, 132.3, 208.3, 302.4, 387.2, 373.1, 
+                                                                                                                                                                                                                       302.4, 188), LungM = c(0, 0, 0, 0, 0.5, 0.5, 1, 2.2, 3.9, 9.6, 
+                                                                                                                                                                                                                                              28.8, 65.8, 134.1, 217, 314.4, 423.3, 439.9, 384.8, 300.7), LungF = c(0, 
+                                                                                                                                                                                                                                                                                                                    0, 0, 0, 0.6, 0.5, 1.5, 2.1, 5.4, 10.5, 35.4, 77.3, 130, 200.8, 
+                                                                                                                                                                                                                                                                                                                    292.3, 357.4, 322, 248.3, 139.3), BreastB = c(0, 0, 0, 0, 0.8, 
+                                                                                                                                                                                                                                                                                                                                                                  4.8, 13.6, 28, 55, 84, 101, 115, 144, 175, 208, 188, 196.7, 212, 
+                                                                                                                                                                                                                                                                                                                                                                  175), BreastM = c(0, 0, 0, 0, 0, 0, 0, 0.5, 0.6, 1.1, 0.5, 1, 
+                                                                                                                                                                                                                                                                                                                                                                                    2.8, 4.1, 5.5, 6.8, 6, 3.4, 0), BreastF = c(0, 0, 0, 0.6, 1.1, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                9.3, 26.8, 55, 109, 166, 200, 227, 280, 335, 393, 346, 345.6, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                349, 250.7), ProsB = c(0, 0, 0, 0, 0, 0, 0, 0, 2.7, 9.8, 40.6, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                       93, 161.6, 265.1, 296.3, 278.6, 228.5, 167.4, 110.2), ProsM = c(0, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       0, 0, 0, 0, 0, 0, 0, 5.6, 19.2, 81.6, 187.6, 330.4, 547.9, 618.7, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       602.1, 517.9, 422.2, 365.1)), class = "data.frame", row.names = c(NA, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -19L))
+
+
+
+
+aml_inc <- function(gender, x){
+  if(gender==1){
+    tmp = splinefun(x=c(seq(0,90,5)), y=c(cumsum(age_incidence$ProsM/100000)*5), method="mono")(x)
+    
+  }
+  else if (gender == 0) {
+    tmp = splinefun(x=c(seq(0,90,5)), y=c(cumsum(age_incidence$BreastF/100000)*5), method="mono")(x)
+    
+  }
+  return(tmp)
+}
+
+all_surv <- function(gender, age1, age2){
+  if(gender==1) {
+    #if male
+    s <- all_cause_mortality_CAN$lx
+    
+  } else {
+    #if female
+    s <- all_cause_mortality_CAN$lx.1
+    
+  }
+  f <- function(x) exp(splinefun(all_cause_mortality_CAN$x, log(s), method="mono")(x))
+  return(f(age2) / f(age1))
+  
+  
+}
+
+aml_inc_cr <- Vectorize(function(gender, age1, age2) sum(diff(aml_inc(gender, seq(age1,age2,1) ))*all_surv(gender, age1, seq(age1,age2-1,1)) ), c("gender","age1","age2"))
+
+
+weightsf.males<-function (matched_samples){
+  matched_samples_temp<- matched_samples[matched_samples$censorship_time > 0 | matched_samples$group %in% c('control','Control'),]#[na.omit(match(matched_samples$GRP_Id ,ids)),]
+  latest.linkage=  as.Date('2019-01-01',format= '%Y-%m-%d')
+  matched_samples_temp$gender= 1
+  control.incidence = matched_samples_temp[matched_samples_temp$group %in% c('control','Control'),]
+  
+  expected_rate_breast_cr <- mean(aml_inc_cr(matched_samples_temp$gender, matched_samples_temp$SDC_AGE_CALC, matched_samples_temp$SDC_AGE_CALC+pmax(1, matched_samples_temp$censorship_time/365))[matched_samples_temp$group %in% c('control','Control')])
+  
+  n_total_prostate <- sum(!matched_samples_temp $group %in% c("Control",'control'))/expected_rate_breast_cr
+  n_total_prostate
+  weights <- rep(1, nrow(matched_samples_temp))
+  weights[matched_samples_temp$group %in% c("Control",'control')] <- n_total_prostate/sum(matched_samples_temp$group %in% c("Control",'control'))
+  
+  return(weights)
+}
+
 autosome_filt = function(medips.count_df) {
   tmp =gsub(':.*','',medips.count_df)
   return_df = medips.count_df[!tmp %in% c('chrY','chrX','chrM')]
   return(return_df)
 }
 
-options(expressions = 5e5)
-library(DESeq2)
-library("BiocParallel")
-ncores = 10
-register(MulticoreParam(ncores))
 
 
 predictive.models.glm = function(targ.matrix1,
@@ -267,32 +416,20 @@ predictive.models.glm = function(targ.matrix1,
 }
 
 ####selecting top performing parameter#####
-gleason.score = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/pathology_records/prostate/gleason.score.RDS')
-all.sample.info=readRDS('/.mounts/labs/awadallalab/private/ncheng/manuscripts/early.cancer.risk/combined.set2.samples.RDS')
+all.sample.info=readRDS('sample.info.RDS') #upload
 all.sample.info = all.sample.info[all.sample.info$sex == 'Male',]
 discovery.set = all.sample.info[all.sample.info$Sex == 'Male' & all.sample.info$data.partition == 'Discovery',]
 test.set = all.sample.info[all.sample.info$Sex == 'Male' & all.sample.info$data.partition != 'Discovery',]
 
-#setting wkdir
-wkdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/breast.cancer.cv/regulatory.regions.v10/'
-savedir=paste0(wkdir,'validation.breast.test/')
-savedir1 = paste0(savedir,'/genhancer.validation/')
-dir.create(savedir1)
-setwd(savedir)
-matrixdir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/fragmentation/aix13.updated1/all.sample.fragmentation/regulatory.counts/'
-####deseq dmrcalling among silencer regions using all discovery set#####
 
+####deseq dmrcalling among silencer regions using all discovery set#####
 merged.df.filt.targ = discovery.set[discovery.set$Sex == 'Male',]
 dds = readRDS('ohs.silencer.dds.RDS')
 windows = rownames(dds)
 windows = windows[!grepl('chrX|chrY',windows)]
 
-
-targ.samples = all.sample.info[all.sample.info$Sex == 'Male',]
-targ.samples = unique(targ.samples[targ.samples$GRP_Id %in% colnames(dds),])
-dds = estimateSizeFactors(dds[windows,targ.samples$GRP_Id])
+dds = estimateSizeFactors(dds[windows,merged.df.filt.targ$GRP_Id])
 dds$condition = dds$group
-
 
 colData(dds)$filler = factor(colData(dds)$filler,levels= c('MFiller','UFiller'))
 colData(dds)$group = factor(ifelse(colData(dds)$Cancer =='Control','Control','Cancer'),levels = c('Control','Cancer'))
@@ -312,20 +449,16 @@ dds.filt$condition = dds.filt$group
 ddssva <- DESeq(dds.filt,full = mm,parallel=T) #differential methylation analysis
 res.df = results(ddssva,contrast = list('groupCancer')) #generating results table
 
-saveRDS(res.df,paste0(savedir1,'ohs.prostate.discovery.DMRs.RDS'))
+saveRDS(res.df,paste0('ohs.prostate.discovery.DMRs.RDS'))
 
 
 ####setting tuning choices ####
-sf = c('AllChr.before','AutoChr.before')
-sf = 'AutoChr.before'
 
 
 
 #####silencer only ml####
 results.df.all = NULL
 feature = 'dmr'
-
-savedir1 = paste0(savedir,'/genhancer.validation/')
 
 res.df$window =rownames(res.df)
 directions = c('abs')
@@ -432,20 +565,19 @@ for (fc in fc.cutoff) {
 
 
 #plotting performance
-wkdir='/wkdir/'
-savedir='/savedir/'
-figdir=paste0(savedir,'figures/')
-dir.create(figdir,recursive = T)
-gleason.score = readRDS('gleason.score.RDS')
-sample.info = all.sample.info
-pred.df.targ = results.df.all[results.df.all$features == 90,];
+wkdir='/wkdir/';
+savedir='/savedir/';
+figdir=paste0(savedir,'figures/');
+dir.create(figdir,recursive = T);
+sample.info = all.sample.info;
+pred.df.targ = results.df.all;
 name = paste0(figdir,'results.df.all');
 merged.df.all= validation.set;
-gleason.score = gleason.score;
 score.cutoff=0.151;
 dx.all = T;
 cutpoint.use =T;
 gs.plot= T
+combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
 
 #initally embedded as a function, but survminer has trouble reading in some data, so try to just run with the chunk of code in braces below
 {
@@ -476,13 +608,6 @@ gs.plot= T
   
   #sample.info.filt.pretime = merged.df.all
   pred.df.targ.collapse.all = pred.df.targ
-  pred.df.targ.collapse.all$model = gsub('.new','',pred.df.targ.collapse.all$model)
-  pred.df.targ.collapse.all= merge(pred.df.targ.collapse.all, merged.df.all[,c('GRP_Id','ResearchId')],by= colnames(merged.df.all)[colnames(merged.df.all) %in% colnames(pred.df.targ.collapse.all)])
-  pred.df.targ.collapse.all = merge(pred.df.targ.collapse.all,gleason.score[,c('GRP_Id','Gleason.score')],by='ResearchId',all.x=T )
-  pred.df.targ.collapse.all[is.na(pred.df.targ.collapse.all$Gleason.score),'Gleason.score'] = 'Not Reported'
-  pred.df.targ.collapse.all$Gleason.score = ifelse(as.character(pred.df.targ.collapse.all$reported) == 'Cancer',pred.df.targ.collapse.all$Gleason.score,
-                                                   ifelse(as.character(pred.df.targ.collapse.all$reported) == 'Control','Control','Not Reported'))
-  
   pred.df.targ.collapse.list = split(pred.df.targ.collapse.all,pred.df.targ.collapse.all$model)
   pred.df.targ.collapse.list = lapply(pred.df.targ.collapse.list, function(x) {
     auc.plot.all = tpr.fpr.calc(x)
@@ -505,7 +630,7 @@ gs.plot= T
         x$event=ifelse(x[,group] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,group] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        male.weights= weightsf.males(x)
         
         ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = male.weights)#
         return(c(ci$c.index,ci$lower,ci$upper))
@@ -669,7 +794,7 @@ gs.plot= T
         x$event=ifelse(x[,'reported'] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        male.weights= weightsf.males(x)
         return.roct = NULL
         targ.times = seq(30,3000,100)
         targ.times = targ.times[targ.times < max(x$censorship_time)]
@@ -786,7 +911,7 @@ gs.plot= T
         x$event=ifelse(x[,group] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,group] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        male.weights= weightsf.males(x)
         
         ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = male.weights)#
         return(c(ci$c.index,ci$lower,ci$upper))
@@ -4305,6 +4430,77 @@ gs.plot= T
 }
 
 combined.performance = list(return.df.final.auroc,return.df.final.auct) #performance stratified by subgroups
+
+
+
+###computing hazard ratios####
+combined.info.all = readRDS('male.ohs.weighting.info.RDS') #upload
+mean.perf.df.targ.tmp = pred.df.targ
+y.index = score.cutoff
+mean.perf.df.targ.tmp.merged = merge(mean.perf.df.targ.tmp, all.sample.info[,c('GRP_Id','censorship_time')],by='GRP_Id')
+mean.perf.df.targ.tmp.merged$Event=ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1)
+mean.perf.df.targ.tmp.merged$group = mean.perf.df.targ.tmp.merged$reported
+mean.perf.df.targ.tmp.merged = mean.perf.df.targ.tmp.merged[!is.na(mean.perf.df.targ.tmp.merged$methylation_score),]
+mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score > y.index,'High Predicted Risk','Low Predicted Risk')
+mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
+mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
+
+male.ohs.qx.weighting = function(subject,combined.info.all) {
+  combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
+  combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
+  combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
+  age.groups =  unique(combined.info.all.male$age_group)
+  fh.groups = unique(combined.info.all.male$Family.history.prostate)
+  alc.groups = unique(combined.info.all.male$Alch.con.group)
+  smk.groups = unique(combined.info.all.male$Smoking.Frequency)
+  control.samples = subject[subject$reported == 'Control',]
+  cancer.samples = subject[subject$reported != 'Control',]
+  
+  control.samples = combined.info.all[combined.info.all$GRP_Id %in% control.samples$GRP_Id,]
+  cancer.samples = combined.info.all[combined.info.all$GRP_Id %in% cancer.samples$GRP_Id,]
+  
+  ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
+  control.weight.samples = NULL
+
+  for (age in age.groups ) {
+    for (fh in fh.groups ){
+      for (alc in alc.groups) {
+        targ.control.cohort = control.samples[control.samples$age_group == age &
+                                                control.samples$Family.history.prostate == fh &
+                                                control.samples$Alch.con.group == alc,]# &control.samples$Smoking.Frequency == smk 
+        if (nrow(targ.control.cohort)>0){
+          cohort.freq =  ohs.pop.samples[ohs.pop.samples$age_group == age &
+                                           ohs.pop.samples$Family.history.prostate == fh &
+                                           ohs.pop.samples$Alch.con.group == alc  ,]
+          
+          targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
+          
+          control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
+        }
+        
+        
+      }
+      
+    }
+  }
+  cancer.samples$weight=1
+  return.df = rbind(control.weight.samples,cancer.samples)
+  return.df = return.df[order(match(return.df$GRP_Id,subject$GRP_Id)),]
+  return(return.df$weight)
+  
+}
+mean.perf.df.targ.tmp.merged = unique(mean.perf.df.targ.tmp.merged)
+weighting=male.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
+km_trt_fit.male.medip <- coxph(Surv(censorship_time/365, Event) ~ Risk.group , data=mean.perf.df.targ.tmp.merged,weights = weighting)
+
+tmp2 = summary(km_trt_fit.male.medip)
+methscore.hr.df = data.frame(Var = rep('cfDNA Methylation Risk Score',2),
+                             Var.group = c('Low Predicted Risk','High Predicted Risk'),
+                             HR = c(1,tmp2$coefficients[2]),
+                             HRL =c(1,tmp2$conf.int[3]),
+                             HRU =c(1,tmp2$conf.int[4]) ,
+                             SE=c(0,tmp2$coefficients[3]),
+                             pvalue = c(1,tmp2$coefficients[6]))
 
 
 

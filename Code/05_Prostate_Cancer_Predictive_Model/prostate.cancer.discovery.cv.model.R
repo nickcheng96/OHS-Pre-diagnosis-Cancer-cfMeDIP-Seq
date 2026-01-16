@@ -1,4 +1,4 @@
-
+#!/usr/bin/env Rscript
 options(expressions = 5e5)
 library(DESeq2)
 library(parallel)
@@ -227,8 +227,8 @@ predictive.models.glm = function(targ.matrix1,
 
 
 ####reading in annotations####
-cpg_count = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/cpg_sites/cpg_site_positions/window_count/hg38_cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
-cpg_count = cpg_count[cpg_count$count >= 5,] #upload
+cpg_count = readRDS('hg38_cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
+cpg_count = cpg_count[cpg_count$count >= 5,] 
 
 #loading sample information file 
 sample.info.filt. = readRDS('sample.info.RDS')
