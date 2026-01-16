@@ -151,9 +151,9 @@ weightsf.males<-function (matched_samples){
   matched_samples_temp$gender= 1
   control.incidence = matched_samples_temp[matched_samples_temp$group %in% c('control','Control'),]
   
-  expected_rate_breast_cr <- mean(aml_inc_cr(matched_samples_temp$gender, matched_samples_temp$SDC_AGE_CALC, matched_samples_temp$SDC_AGE_CALC+pmax(1, matched_samples_temp$censorship_time/365))[matched_samples_temp$group %in% c('control','Control')])
+  expected_rate_prostate_cr <- mean(aml_inc_cr(matched_samples_temp$gender, matched_samples_temp$SDC_AGE_CALC, matched_samples_temp$SDC_AGE_CALC+pmax(1, matched_samples_temp$censorship_time/365))[matched_samples_temp$group %in% c('control','Control')])
   
-  n_total_prostate <- sum(!matched_samples_temp $group %in% c("Control",'control'))/expected_rate_breast_cr
+  n_total_prostate <- sum(!matched_samples_temp $group %in% c("Control",'control'))/expected_rate_prostate_cr
   n_total_prostate
   weights <- rep(1, nrow(matched_samples_temp))
   weights[matched_samples_temp$group %in% c("Control",'control')] <- n_total_prostate/sum(matched_samples_temp$group %in% c("Control",'control'))
