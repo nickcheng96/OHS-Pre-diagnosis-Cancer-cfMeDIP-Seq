@@ -231,7 +231,7 @@ cpg_count = readRDS('hg38_cpg_window_300_count.RDS') #number of cpg sites across
 cpg_count = cpg_count[cpg_count$count >= 5,] 
 
 #loading sample information file 
-sample.info.filt. = readRDS('sample.info.RDS')
+sample.info.filt = readRDS('sample.info.RDS')
 sample.info.filt = sample.info.filt[sample.info.filt$data.partition %in% c('Discovery') & sample.info.filt$Sex == 'Male',]
 targets = list('Prostate' = sample.info.filt)
 
