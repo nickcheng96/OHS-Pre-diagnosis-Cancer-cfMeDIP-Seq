@@ -167,7 +167,6 @@ sample.info = sample.info[sample.info$Sex == 'Male',]
 wkdir='/wkdir/'
 marker.list = c('silencer')
 
-median.perf.list = list()
 mean.perf.list = list()
 for (m in marker.list){
   print(m)
@@ -221,7 +220,6 @@ for (m in marker.list){
 figdir = paste0(wkdir,'/discovery.cv.figures/')
 dir.create(figdir,recursive = T)
 perfdir= paste0(wkdir,'/')
-perf.list = list('mean.cv'= pred.df.collapse.mean)
 
 
 #computing concordance and auc from mean CV risk scores 
