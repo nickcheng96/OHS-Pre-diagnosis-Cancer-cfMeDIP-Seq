@@ -87,9 +87,15 @@ for (sex in names(sample.list))  {
   dds.matrix =counts(dds,normalize =T)
   
   #saving normalized counts + deseq object
-  saveRDS(dds.matrix,paste0(savedir,'ohs.',sex,'all.samples.deseq.normcounts.RDS'))
-  saveRDS(dds,paste0(savedir,'ohs.',sex,'all.samples.dds.RDS'))
-  
+  if(discovery.only == T) {
+    saveRDS(dds.matrix,paste0(savedir,'ohs.',sex,'.discovery.samples.deseq.normcounts.RDS'))
+    saveRDS(dds,paste0(savedir,'ohs.',sex,'.discovery.samples.dds.RDS'))
+    
+  } else {
+    saveRDS(dds.matrix,paste0(savedir,'ohs.',sex,'.all.samples.deseq.normcounts.RDS'))
+    saveRDS(dds,paste0(savedir,'ohs.',sex,'.all.samples.dds.RDS'))
+    
+  }
   
   
   
@@ -160,10 +166,18 @@ for (sex in names(sample.list))  {
       dds.matrix =counts(dds,normalize =T)
       
       #saving fount files
-      saveRDS(dds.matrix,paste0(savedir,'ohs.',inserts,'.',marker,'.norm.counts.RDS'))
-      saveRDS(dds,paste0(savedir,'ohs.',inserts,'.',marker,'.dds.RDS'))
+
       
-      
+      if(discovery.only == T) {
+        saveRDS(dds.matrix,paste0(savedir,'ohs.',inserts,'.',marker,'.discovery.norm.counts.RDS'))
+        saveRDS(dds,paste0(savedir,'ohs.',inserts,'.',marker,'.discovery.dds.RDS'))
+        
+      } else {
+        saveRDS(dds.matrix,paste0(savedir,'ohs.',inserts,'.',marker,'.all.norm.counts.RDS'))
+        saveRDS(dds,paste0(savedir,'ohs.',inserts,'.',marker,'.all.dds.RDS'))
+        
+        
+      }
       
       
       
