@@ -1,10 +1,11 @@
+#!/usr/bin/env Rscript
 #loading libraries
 library(parallel)
 library(DESeq2)
 
 
 #loading sample information file
-sample.info.filt=readRDS('combined.set.samples.RDS')
+sample.info.filt=readRDS('sample.info.RDS')
 
 #setting directories
 savedir='/User/workdirectory/'
