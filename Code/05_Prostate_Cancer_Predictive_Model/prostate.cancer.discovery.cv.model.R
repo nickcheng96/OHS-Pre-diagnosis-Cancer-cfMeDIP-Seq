@@ -25,16 +25,6 @@ train_test_partition_cv.singlesex = function(year2_diagnosis_samples, splits = 1
   return(return_df)
 }
 
-
-auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
-  tmp = prediction_table
-  tmp = tmp[order(-tmp$methylation_score),]
-  pred = prediction(predictions = c(tmp$methylation_score) ,labels =  tmp$reported, labels)
-  perf_AUC=performance(pred,"auc") #Calculate the AUC value
-  AUC=perf_AUC@y.values[[1]]
-  return(AUC)
-}
-
 predictive.models.glm = function(targ.matrix1,
                                  merged.df,
                                  train.set,
@@ -231,14 +221,14 @@ cpg_count = readRDS('hg38_cpg_window_300_count.RDS') #number of cpg sites across
 cpg_count = cpg_count[cpg_count$count >= 5,] 
 
 #loading sample information file 
-sample.info.filt = readRDS('sample.info.RDS')
+sample.info.filt. = readRDS('sample.info.RDS')
 sample.info.filt = sample.info.filt[sample.info.filt$data.partition %in% c('Discovery') & sample.info.filt$Sex == 'Male',]
 targets = list('Prostate' = sample.info.filt)
 
 
 #setting directories
 wkdir='/place/where/counts/are/stored/'
-savedir='/place/to/save/files'
+
 setwd(wkdir)
 marker = c('silencer') 
 
@@ -246,7 +236,7 @@ marker = c('silencer')
 for (fold in foldno){
   for (i in names(targets)) {
     start = Sys.time()
-    dds = readRDS(paste0(wkdir,'/ohs.1000.silencer.dds.RDS'))
+    dds = readRDS(paste0(wkdir,'/ohs.1000.silencer.dds.RDS')) #deseq object from ohs discovery set medip counts created in 02_Intersample_count_normalization.R
     
     #selecting all male discovery set samples
     targ.samples = targets[[i]]
@@ -302,24 +292,19 @@ dds.matrix = readRDS(paste0(wkdir,'ohs.1000.silencer.norm.counts.RDS'))
 for (fold in foldno)   {
   if (file.exists(paste0(savedir,i,'.',seedno,'.',fold,'.dmr.RDS')) == T) {
     #loading previously computed DMRs
-    res.df = data.frame(readRDS(paste0(savedir,i,'.',seedno,'.',fold,'.dmr.RDS')),check.names=F)
     
     #selecting samples of interest (ie male prostate cancer/controls)
     targ.samples = targets[[i]]
     targ.samples = targ.samples[targ.samples$GRP_Id %in% colnames(dds.matrix),]
     targ.samples$group = ifelse(targ.samples$Cancer == 'Control','Control','Cancer')
     
-    #loading train/test fold partition
-    train.set = readRDS(paste0(savedir,i,'.',seedno,'.',fold,'.samplesplit.RDS'))
-    test.set = targ.samples[!targ.samples$GRP_Id %in% train.set$GRP_Id,]
-    
-    
     #selecting features for ML models
     for (dir in c('abs','hyper')){ #abs regions used in study
-      predir=paste0(savedir,'predictions.',dir,'/')
+      predir=paste0(wkdir,'/',marker,'/',dir,'/')
       dir.create(predir, recursive = T)
       
       if(file.exists(paste0(predir,i,'.',seedno,'.',fold,'.predictions.RDS')) == F) {
+        res.df = data.frame(readRDS(paste0(savedir,i,'.',seedno,'.',fold,'.dmr.RDS')),check.names=F)
         
         #ordering and selecting top DMRs
         if (dir == 'hyper'){
@@ -358,10 +343,14 @@ for (fold in foldno)   {
                                            stat.test = paste0('deseq.',mat))
             #test fold performance
             perf.df = res.df.all[[1]] 
+            perf.df$mat = mat
+            perf.df$comparison = i
             perf.df$direction = dir
 
             #feature weightings
             perf.df = res.df.all[[2]] 
+            perf.df$mat = mat
+            perf.df$comparison = i
             perf.df$direction = dir
 
             complete.res.base= rbind(complete.res.base,perf.df)

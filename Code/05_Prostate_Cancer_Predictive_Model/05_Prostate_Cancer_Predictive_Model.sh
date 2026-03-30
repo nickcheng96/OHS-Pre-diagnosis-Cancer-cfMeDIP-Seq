@@ -1,3 +1,4 @@
+#!/bin/bash
 #1 100-fold repeated CV model predictions + running
 for i in {1..10}; #10 folds
 do for l in {1..100}; #100 repeats
