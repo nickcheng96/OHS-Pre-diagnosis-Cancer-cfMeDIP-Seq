@@ -22,8 +22,6 @@ library(ggh4x)
 library(survcomp)
 library(cenROC)
 
-
-
 ####functions to be used in analysis####
 auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
   tmp = prediction_table
@@ -146,6 +144,8 @@ all_surv <- function(gender, age1, age2){
 
 aml_inc_cr <- Vectorize(function(gender, age1, age2) sum(diff(aml_inc(gender, seq(age1,age2,1) ))*all_surv(gender, age1, seq(age1,age2-1,1)) ), c("gender","age1","age2"))
 
+expected_rate_breast_cr <- mean(aml_inc_cr(matched_samples_temp$gender, matched_samples_temp$SDC_AGE_CALC, matched_samples_temp$Age +pmax(1, matched_samples_temp$censorship_time/365))[matched_samples_temp$group %in% c('control','Control')])
+
 
 weightsf.females<-function (matched_samples){
   matched_samples_temp<- matched_samples[matched_samples$censorship_time > 0 | matched_samples$group %in% c('control','Control'),]
@@ -173,62 +173,53 @@ mean.perf.list = list()
 for (m in marker.list){
   print(m)
   
-  directions = list.files(pattern='predictions.*',path =paste0(wkdir,m,'/'))
-  
-  if (length(directions) > 0) {
-    pred.df.all = NULL
-    for (dir in directions) {
-      print(dir)
-      savedir=paste0(wkdir,'/',m,'/',dir,'/')
-      if(file.exists(savedir) == T) { 
-        setwd(savedir)
-        pred.files = list.files(pattern='.*predictions.RDS')
-        if (length(pred.files) > 1) {
-          pred.list =mclapply(pred.files,function(x) {
-            tmp = readRDS(x)
-            tmp$feature = m
-            tmp$covariate = 'none'
-            tmp$fc= 0.25
-            tmp$direction = dir
-            return(tmp)
-            
-            
-          },mc.cores=5 )
-          pred.df.all.tmp=do.call('rbind',pred.list)
-          feature.size.count = data.frame(table(pred.df.all.tmp$n.features),stringsAsFactors = F)
-          pred.df.all =rbind(pred.df.all, unique(pred.df.all.tmp))
+  directions = c('hyper')
+  pred.df.all = NULL
+  for (dir in directions) {
+    print(dir)
+    savedir=paste0(wkdir,'/',m,'/',dir,'/')
+    if(file.exists(savedir) == T) { 
+      setwd(savedir)
+      pred.files = list.files(pattern='.*predictions.RDS')
+      if (length(pred.files) > 1) {
+        pred.list =mclapply(pred.files,function(x) {
+          tmp = readRDS(x)
+          tmp$feature = m
+          tmp$direction = dir
+          return(tmp)
           
-        }
+          
+        },mc.cores=5 )
+        pred.df.all.tmp=do.call('rbind',pred.list)
+        feature.size.count = data.frame(table(pred.df.all.tmp$n.features),stringsAsFactors = F)
+        pred.df.all =rbind(pred.df.all, unique(pred.df.all.tmp))
         
       }
       
     }
-    pred.df.all$freq = 1
-    #computing cross-validated classification score by averaging performance across CV repeats grouped by model, tuning paramters and feature numbers
-    pred.df.all.freq =ddply(pred.df.all[,c('GRP_Id','reported','model','feature','test','n.features','direction','freq','covariate','dir','fc')],
-                            c('GRP_Id','reported','model','feature','test','n.features','direction','covariate','dir','fc'),
-                            numcolwise(sum))
-    
-    
-    pred.df.collapse.mean = ddply(pred.df.all[,c('GRP_Id','reported','methylation_score','model','feature','test','n.features','direction','covariate','dir','fc')],
-                                  c('GRP_Id','reported','model','feature','test','n.features','direction','covariate','dir','fc'),
-                                  numcolwise(mean))
-    
-    pred.df.collapse.mean =merge(pred.df.collapse.mean,pred.df.all.freq,by=c('GRP_Id','reported','model','feature','test','n.features','mat','direction','covariate','dir','fc'))
     
   }
+  #computing cross-validated classification score by averaging performance across CV repeats grouped by model, tuning paramters and feature numbers
+  pred.df.all.freq =ddply(pred.df.all[,c('GRP_Id','reported','model','feature','n.features','direction')],
+                          c('GRP_Id','reported','model','feature','n.features','direction'),
+                          numcolwise(sum))
+  
+  
+  pred.df.collapse.mean = ddply(pred.df.all[,c('GRP_Id','reported','methylation_score','model','feature','n.features','direction')],
+                                c('GRP_Id','reported','model','feature','n.features','direction'),
+                                numcolwise(mean))
+  
+  pred.df.collapse.mean =merge(pred.df.collapse.mean,pred.df.all.freq,by=c('GRP_Id','reported','model','feature','n.features','direction'))
+  
   
 }
 
 
 
 #####methylation dmr performance#####
-savedir='/save/directory/'
-
-
 #computing concordance and auc from mean CV risk scores 
 targ.perf = pred.df.collapse.mean
-targ.perf.list = split(targ.perf, targ.perf[,c('model','feature','test','n.features','direction','covariate','fc')])
+targ.perf.list = split(targ.perf, targ.perf[,c('model','feature','n.features','direction')])
 targ.perf.list = targ.perf.list[sapply(targ.perf.list,nrow)>0 ]
 targ.perf.list =lapply(targ.perf.list, function(x) {
   tmp = x
@@ -250,13 +241,12 @@ rownames(overall.perf) = c(1:nrow(overall.perf))
 
 ####selecting top performing parameter according to best CV auroc
 
-target.parameters = overall.perf#[overall.perf$n.features == 100 ,] #top 100 features used in manuscript
+target.parameters = overall.perf[overall.perf$n.features == 100 ,] #top 100 features used in manuscript
 target.parameters = target.parameters[order(-target.parameters$All),][1,]
 
 overall.perf.targ.breast = overall.perf[overall.perf$n.features == target.parameters$n.features & 
                                             overall.perf$direction == target.parameters$direction & 
                                             overall.perf$feature == target.parameters$feature & 
-                                            overall.perf$mat == target.parameters$mat &
                                             overall.perf$model == target.parameters$model, ]
 
 score.cutoff = cutpointr(overall.perf.targ.breast$methylation_score,overall.perf.targ.breast$reported, method = maximize_metric, metric = youden)
@@ -264,15 +254,14 @@ score.cutoff.breast = score.cutoff$optimal_cutpoint
 
 
 ###breast cancer plotting####
-
+figdir=paste(wkdir,'directions/')
 dir.create(figdir,recursive = T)
-
+combined.info.all = readRDS('female.epican.weighting.info')
 pred.df.targ = overall.perf.targ.breast
 name = paste0(figdir,'brca.top')
 merged.df.all = sample.info
-dx.all = F
 score.cutoff=score.cutoff.breast
-cutpoint.use=T
+cutpoint.use=T #if pre-defined cutoff selected cutpointed
 sample.info = sample.info
 
 #initially saved as a function, but R has trouble reading some survminer functions as a function
@@ -314,9 +303,9 @@ sample.info = sample.info
         x$event=ifelse(x[,group] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,group] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        female.weights= weightsf.females(x)
         
-        ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = male.weights)#
+        ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = female.weights)#
         return(c(ci$c.index,ci$lower,ci$upper))
       }
       
@@ -391,16 +380,16 @@ sample.info = sample.info
       subject1 = mean.perf.df.targ.tmp.merged
       female.ohs.qx.weighting = function(subject,combined.info.all) {
         #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.breast','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
-        combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Female',]
-        combined.info.all.male = combined.info.all.male[combined.info.all.male$Cancer %in% c('Control','Breast'),]
-        combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-        combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-        #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
-        age.groups =  unique(combined.info.all.male$age_group)
-        fh.groups = unique(combined.info.all.male$Family.history.breast)
-        alc.groups = unique(combined.info.all.male$Alch.con.group)
-        smk.groups = unique(combined.info.all.male$Smoking.Frequency)
+        combined.info.all.female = combined.info.all[combined.info.all$Sex == 'Female',]
+        combined.info.all.female = combined.info.all.female[combined.info.all.female$Cancer %in% c('Control','Breast'),]
+        combined.info.all.female$Smoking.Frequency = as.character(combined.info.all.female$Smoking.Frequency)
+        combined.info.all.female[is.na(combined.info.all.female$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
+        #bmi.short.groups = unique(combined.info.all.female$bmi.group.short)
+        #bmi.long.groups = unique(combined.info.all.female$bmi.group.long)
+        age.groups =  unique(combined.info.all.female$age_group)
+        fh.groups = unique(combined.info.all.female$Family.history.breast)
+        alc.groups = unique(combined.info.all.female$Alch.con.group)
+        smk.groups = unique(combined.info.all.female$Smoking.Frequency)
         control.samples = subject[subject$reported == 'Control',]
         cancer.samples = subject[subject$reported != 'Control',]
         
@@ -463,12 +452,10 @@ sample.info = sample.info
       x = merge(mean.perf.df.targ.tmp.merged,sample.info)
       x$event=ifelse(x[,'reported'] =='Cancer',1,0)
       x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
-      library(survcomp)
       x = x[order(match(x$GRP_Id,mean.perf.df.targ.tmp.merged$GRP_Id )),]
-      male.weights= weightsf.females(x)
+      female.weights= weightsf.females(x)
       mean.perf.df.targ.tmp.merged = x[,c(colnames(mean.perf.df.targ.tmp.merged))]
-      
-      mean.perf.df.targ.tmp.merged$weighting = male.weights
+      mean.perf.df.targ.tmp.merged$weighting = female.weights
       
       #mean.perf.df.targ.tmp.merged$weighting = female.ohs.qx.weighting(mean.perf.df.targ.tmp.merged,merged.df.all.tmp[merged.df.all.tmp$GRP_Id %in% mean.perf.df.targ.tmp.merged$GRP_Id,])
       
@@ -513,7 +500,7 @@ sample.info = sample.info
         x$event=ifelse(x[,'reported'] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        female.weights= weightsf.females(x)
         return.roct = NULL
         targ.times = seq(30,3000,100)
         targ.times = targ.times[targ.times < max(x$censorship_time)]
@@ -522,7 +509,6 @@ sample.info = sample.info
                         M=x$methylation_score, 
                         censor=x$event, 
                         t=time,
-                        #  h = male.weights,
                         bw = "NR", method = "emp",
                         ktype = "normal", ktype1 = "normal", B = 100, alpha = 0.05, plot = "TRUE")
           tmp.df = data.frame(time = time, 
@@ -630,9 +616,9 @@ sample.info = sample.info
         x$event=ifelse(x[,group] =='Cancer',1,0)
         x$reported.surv = ifelse(x[,group] == 'Cancer',1,0)
         library(survcomp)
-        male.weights= weightsf.females(x)
+        female.weights= weightsf.females(x)
         
-        ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = male.weights)#
+        ci= concordance.index(x$methylation_score, x$'censorship_time', surv.event = x$event, comppairs=10, na.rm = FALSE,weights = female.weights)#
         return(c(ci$c.index,ci$lower,ci$upper))
       }
       
@@ -710,15 +696,15 @@ sample.info = sample.info
       female.ohs.qx.weighting = function(subject1,combined.info.all) {
         subject = merge(subject1, sample.info.filt.pretime[,c('GRP_Id','Smoking.Frequency','age_group','Family.history.breast','Alch.con.group')],by='GRP_Id')
         #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.breast','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
-        combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
-        combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-        combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-        #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
-        age.groups =  unique(combined.info.all.male$age_group)
-        fh.groups = unique(combined.info.all.male$Family.history.breast)
-        alc.groups = unique(combined.info.all.male$Alch.con.group)
-        smk.groups = unique(combined.info.all.male$Smoking.Frequency)
+        combined.info.all.female = combined.info.all[combined.info.all$Sex == 'Male',]
+        combined.info.all.female$Smoking.Frequency = as.character(combined.info.all.female$Smoking.Frequency)
+        combined.info.all.female[is.na(combined.info.all.female$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
+        #bmi.short.groups = unique(combined.info.all.female$bmi.group.short)
+        #bmi.long.groups = unique(combined.info.all.female$bmi.group.long)
+        age.groups =  unique(combined.info.all.female$age_group)
+        fh.groups = unique(combined.info.all.female$Family.history.breast)
+        alc.groups = unique(combined.info.all.female$Alch.con.group)
+        smk.groups = unique(combined.info.all.female$Smoking.Frequency)
         control.samples = subject[subject$reported == 'Control',]
         cancer.samples = subject[subject$reported != 'Control',]
         
@@ -850,13 +836,11 @@ sample.info = sample.info
   auc.plot.all$auc = auc_calc(pred.df.targ.collapse,labels= c('Control','Cancer'))
   combined.auroc = NULL
   auc.t.combined = NULL
+  auc.res1 = NULL
+  
   print(c)
-  if (c == 'All'){
-    merged.df.all.tmp = merged.df.all
-  } else {
-    merged.df.all.tmp = merged.df.all[merged.df.all$filler == c,]
-  }
-  library(cutpointr)
+  merged.df.all.tmp = merged.df.all
+  
   
   
   pred.df.targ.collapse.all=pred.df.targ.collapse
@@ -877,66 +861,8 @@ sample.info = sample.info
 
   
   auc.plot.all = tpr.fpr.calc(pred.df.targ.collapse)
-  if (dx.all == T){
-    auc.plot.all$dx.time = 'All'
-    auc.plot.all$auc = auc_calc(pred.df.targ.collapse,c('Control','Cancer'))
-    auc.plot.all.dx12 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,])
-    auc.plot.all.dx12$dx.time = '0-2'
-    auc.plot.all.dx12$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,],c('Control','Cancer'))
-    
-    print('dx tmie 2 years')
-    auc.plot.all.dx34 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,])
-    auc.plot.all.dx34$dx.time = '2-4'
-    auc.plot.all.dx34$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,],c('Control','Cancer'))
-    
-    
-    auc.plot.all.dx45 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,])
-    auc.plot.all.dx45$dx.time = '4-6'
-    auc.plot.all.dx45$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,],c('Control','Cancer'))
-    
-    auc.plot.all.dx56 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx56$GRP_Id,])
-    auc.plot.all.dx56$dx.time = '6-10'
-    auc.plot.all.dx56$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx56$GRP_Id,],c('Control','Cancer'))
-    
-    
-    auc.res1 = rbind(auc.plot.all[1,c('auc','dx.time')],
-                     auc.plot.all.dx12[1,c('auc','dx.time')],
-                     auc.plot.all.dx34[1,c('auc','dx.time')],
-                     auc.plot.all.dx45[1,c('auc','dx.time')],
-                     auc.plot.all.dx56[1,c('auc','dx.time')])
-    colnames(auc.res1) = c('auc','subgroup')
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D','#C8553D')
-    names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-10')
-    combined.auc.plot.all = rbind(auc.plot.all,auc.plot.all.dx12,auc.plot.all.dx34,auc.plot.all.dx45,auc.plot.all.dx56)
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtim2e.labs.png'),height = 1000,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-    
-  } else {
-    auc.res1 = NULL
-  }
+  
+
   
   #dx time 1 year
   print('dx tmie 1 years')
@@ -956,11 +882,9 @@ sample.info = sample.info
     tmp = factor(tmp, levels = diagnosis_time_groups) 
     return(tmp)
   }
-  if (c == 'All'){
-    merged.df.all.tmp = merged.df.all
-  } else {
-    merged.df.all.tmp = merged.df.all[merged.df.all$filler == c,]
-  }
+  
+  merged.df.all.tmp = merged.df.all
+  
   
   #plotting by dx time
   merged.df.all.tmp$Diagnosis_Time = diagnosis_time_grouping(merged.df.all.tmp$diff_in_days)
@@ -1008,300 +932,87 @@ sample.info = sample.info
   auc.plot.all.dx5[[2]]$var = '4-5'
   
   auc.plot.all.dx5[[2]]$var.group = 'Time to Diagnosis'
+
+  auc.res2 = rbind(auc.plot.all[[2]][1,],
+                   auc.plot.all.dx1[[2]][1,],
+                   auc.plot.all.dx2[[2]][1,],
+                   auc.plot.all.dx3[[2]][1,],
+                   auc.plot.all.dx4[[2]][1,],
+                   auc.plot.all.dx5[[2]][1,])
+  auc.res2$title = 'Diagnosis Time'
+  combined.auroc = rbind(combined.auroc,auc.res2)
   
-  if (dx.all == T){
-    dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6'),]
-    dx7 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7','7-8','8-9','9+'),]
-    dx8 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','7-8'),]
-    dx9 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9+'),]
-    
-    auc.plot.all.dx6 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx6[[2]]$dx.time = '5-6'
-    auc.plot.all.dx6[[2]]$var = '5-6'
-    
-    auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
-    
-    auc.plot.all.dx7 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx7$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx7[[2]]$dx.time = '6-7'
-    auc.plot.all.dx7[[2]]$var = '6-7'
-    
-    auc.plot.all.dx7[[2]]$var.group = 'Time to Diagnosis'
-    
-    
-    auc.plot.all.dx8 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx8$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx8[[2]]$dx.time = '7-8'
-    auc.plot.all.dx8[[2]]$var = '7-8'
-    
-    auc.plot.all.dx8[[2]]$var.group = 'Time to Diagnosis'
-    
-    
-    auc.plot.all.dx9 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx9$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx9[[2]]$dx.time = '8-10'
-    auc.plot.all.dx9[[2]]$var = '8-10'
-    
-    auc.plot.all.dx9[[2]]$var.group = 'Time to Diagnosis'
-    
-    #
-    
-    auc.res2 = rbind(auc.plot.all[[2]][1,],
-                     auc.plot.all.dx1[[2]][1,],
-                     auc.plot.all.dx2[[2]][1,],
-                     auc.plot.all.dx3[[2]][1,],
-                     auc.plot.all.dx4[[2]][1,],
-                     auc.plot.all.dx5[[2]][1,],
-                     auc.plot.all.dx6[[2]][1,],
-                     auc.plot.all.dx7[[2]][1,],
-                     auc.plot.all.dx8[[2]][1,],
-                     auc.plot.all.dx9[[2]][1,])
-    auc.res2$title = 'Diagnosis Time'
-    combined.auroc = rbind(combined.auroc,auc.res2)
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.dx1[[3]]$var = '0-1'
-    auc.plot.all.dx2[[3]]$var = '1-2'
-    auc.plot.all.dx3[[3]]$var = '2-3'
-    auc.plot.all.dx4[[3]]$var = '3-4'
-    auc.plot.all.dx5[[3]]$var = '4-5'
-    auc.plot.all.dx6[[3]]$var = '5-6'
-    auc.plot.all.dx7[[3]]$var = '6+'
-    auc.plot.all.dx8[[3]]$var = '7-8'
-    auc.plot.all.dx9[[3]]$var = '8-10'
-    
-    
-    auc.t =rbind( auc.plot.all[[3]],
-                  auc.plot.all.dx1[[3]],
-                  auc.plot.all.dx2[[3]],
-                  auc.plot.all.dx3[[3]],
-                  auc.plot.all.dx4[[3]],
-                  auc.plot.all.dx5[[3]],
-                  auc.plot.all.dx6[[3]],
-                  auc.plot.all.dx7[[3]],
-                  auc.plot.all.dx8[[3]],
-                  auc.plot.all.dx9[[3]]
-    )
-    auc.t$title = 'Diagnosis Time'
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #annotating others
-    
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
-    combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                  auc.plot.all.dx1[[2]],
-                                  auc.plot.all.dx2[[2]],
-                                  auc.plot.all.dx3[[2]],
-                                  auc.plot.all.dx4[[2]],
-                                  auc.plot.all.dx5[[2]],
-                                  auc.plot.all.dx6[[2]],
-                                  auc.plot.all.dx7[[2]],
-                                  auc.plot.all.dx8[[2]],
-                                  auc.plot.all.dx9[[2]])
-    combined.auc.plot.all$title = 'Diagnosis Time'
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-  } else {
-    
-    auc.res2 = rbind(auc.plot.all[[2]][1,],
-                     auc.plot.all.dx1[[2]][1,],
-                     auc.plot.all.dx2[[2]][1,],
-                     auc.plot.all.dx3[[2]][1,],
-                     auc.plot.all.dx4[[2]][1,],
-                     auc.plot.all.dx5[[2]][1,])
-    auc.res2$title = 'Diagnosis Time'
-    combined.auroc = rbind(combined.auroc,auc.res2)
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.dx1[[3]]$var = '0-1'
-    auc.plot.all.dx2[[3]]$var = '1-2'
-    auc.plot.all.dx3[[3]]$var = '2-3'
-    auc.plot.all.dx4[[3]]$var = '3-4'
-    auc.plot.all.dx5[[3]]$var = '4-5'
-    
-    auc.t =rbind( auc.plot.all[[3]],
-                  auc.plot.all.dx1[[3]],
-                  auc.plot.all.dx2[[3]],
-                  auc.plot.all.dx3[[3]],
-                  auc.plot.all.dx4[[3]],
-                  auc.plot.all.dx5[[3]]
-    )
-    auc.t$title = 'Diagnosis Time'
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #annotating others
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
-    combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                  auc.plot.all.dx1[[2]],
-                                  auc.plot.all.dx2[[2]],
-                                  auc.plot.all.dx3[[2]],
-                                  auc.plot.all.dx4[[2]],
-                                  auc.plot.all.dx5[[2]])
-    combined.auc.plot.all$title = 'Diagnosis Time'
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      # facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-  }
+  #annotating auc t
+  auc.plot.all[[3]]$var = 'All'
+  auc.plot.all.dx1[[3]]$var = '0-1'
+  auc.plot.all.dx2[[3]]$var = '1-2'
+  auc.plot.all.dx3[[3]]$var = '2-3'
+  auc.plot.all.dx4[[3]]$var = '3-4'
+  auc.plot.all.dx5[[3]]$var = '4-5'
   
-  if (dx.all == T){
-    
-    dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6','6-7','7-8','8-9','9+'),]
-    
-    
-    auc.plot.all.dx6 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx6[[2]]$dx.time = '5+'
-    auc.plot.all.dx6[[2]]$var = '5+'
-    
-    auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
-    
-    
-    auc.res2 = rbind(auc.plot.all[[2]][1,],
-                     auc.plot.all.dx1[[2]][1,],
-                     auc.plot.all.dx2[[2]][1,],
-                     auc.plot.all.dx3[[2]][1,],
-                     auc.plot.all.dx4[[2]][1,],
-                     auc.plot.all.dx5[[2]][1,],
-                     auc.plot.all.dx6[[2]][1,])
-    auc.res2$title = 'Diagnosis Time'
-    combined.auroc = rbind(combined.auroc,auc.res2)
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.dx1[[3]]$var = '0-1'
-    auc.plot.all.dx2[[3]]$var = '1-2'
-    auc.plot.all.dx3[[3]]$var = '2-3'
-    auc.plot.all.dx4[[3]]$var = '3-4'
-    auc.plot.all.dx5[[3]]$var = '4-5'
-    auc.plot.all.dx6[[3]]$var = '5+'
-    
-    
-    
-    auc.t =rbind( auc.plot.all[[3]],
-                  auc.plot.all.dx1[[3]],
-                  auc.plot.all.dx2[[3]],
-                  auc.plot.all.dx3[[3]],
-                  auc.plot.all.dx4[[3]],
-                  auc.plot.all.dx5[[3]],
-                  auc.plot.all.dx6[[3]]
-    )
-    auc.t$title = 'Diagnosis Time'
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #annotating others
-    
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
-    combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                  auc.plot.all.dx1[[2]],
-                                  auc.plot.all.dx2[[2]],
-                                  auc.plot.all.dx3[[2]],
-                                  auc.plot.all.dx4[[2]],
-                                  auc.plot.all.dx5[[2]],
-                                  auc.plot.all.dx6[[2]])
-    combined.auc.plot.all$title = 'Diagnosis Time'
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-  } 
+  auc.t =rbind( auc.plot.all[[3]],
+                auc.plot.all.dx1[[3]],
+                auc.plot.all.dx2[[3]],
+                auc.plot.all.dx3[[3]],
+                auc.plot.all.dx4[[3]],
+                auc.plot.all.dx5[[3]]
+  )
+  auc.t$title = 'Diagnosis Time'
+  auc.t.combined = rbind(auc.t.combined,auc.t)
   
+  #annotating others
+  diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
+  names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
+  combined.auc.plot.all = rbind(auc.plot.all[[2]],
+                                auc.plot.all.dx1[[2]],
+                                auc.plot.all.dx2[[2]],
+                                auc.plot.all.dx3[[2]],
+                                auc.plot.all.dx4[[2]],
+                                auc.plot.all.dx5[[2]])
+  combined.auc.plot.all$title = 'Diagnosis Time'
+  plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    # facet_grid2(.~title)+
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=8,face="bold"),
+          legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+  
+  png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+  print(plot1)
+  dev.off()
+  
+
   
   
   
   pred.df.targ.collapse.annotated = merge(pred.df.targ.collapse, merged.df.all.tmp[,c('GRP_Id','Diagnosis_Time')],by='GRP_Id')
   
-  if (dx.all == F){
-    my_comparisons = list(c('Control','0-1'),
-                          c('Control','1-2'),
-                          c('Control','2-3'),
-                          c('Control','3-4'),
-                          c('Control','4-5'))
-    options(scipen=2)
-    pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','Control'))
-    print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-    
-    
-    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      scale_y_continuous(limits=c(0,1.45),breaks = seq(0,1,0.25))+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-      stat_compare_means(comparisons = my_comparisons,label.y=c(1,1.1,1.2,1.3,1.4,1.5),size=3)
-    
-    
-    png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-  } else {
-    my_comparisons = list(c('Control','0-1'),
-                          c('Control','1-2'),
-                          c('Control','2-3'),
-                          c('Control','3-4'),
-                          c('Control','4-5'),
-                          c('Control','5-6'),
-                          c('Control','6-7'),
-                          c('Control','7-8'))
-    diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')#,'#F46197','#C3C3E6','#442B48'
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')#,'6-7','7-8','8-10')
-    
-    options(scipen=2)
-    pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10','Control'))
-    print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-    
-    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-      stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
-    
-    
-    png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-  }
+  my_comparisons = list(c('Control','0-1'),
+                        c('Control','1-2'),
+                        c('Control','2-3'),
+                        c('Control','3-4'),
+                        c('Control','4-5'))
+  options(scipen=2)
+  pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','Control'))
+  print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
+  
+  
+  plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    scale_y_continuous(limits=c(0,1.45),breaks = seq(0,1,0.25))+
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=8,face="bold"),
+          legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
+    stat_compare_means(comparisons = my_comparisons,label.y=c(1,1.1,1.2,1.3,1.4,1.5),size=3)
+  
+  
+  png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
+  print(plot1)
+  dev.off()
   
   
   ####plotting stage####
@@ -1354,11 +1065,7 @@ sample.info = sample.info
   auc.t$title = 'Stage'
   auc.t.combined = rbind(auc.t.combined,auc.t)
   
-  #auc t
-  
-  
-  
-  #
+
   auc.res1 = rbind(
     auc.plot.all.s1[[2]][1,],
     auc.plot.all.s2[[2]][1,],
@@ -1575,7 +1282,8 @@ sample.info = sample.info
   #copy
   
   #####morphology#####
-  {
+  morphology = T
+  if (morphology == T) {
     print('morphology')
     brca.morphology = c('85003' = 'Infiltrating ductal carcinoma',
                         '85203' = 'Lobular NOS',
@@ -1990,7 +1698,6 @@ sample.info = sample.info
   
   #plotting age##
   
-  library(ggh4x)
   age_grouping2 = function(age) {
     tmp = ifelse(age >= 35 & age < 45, '35-45', age)
     tmp = ifelse(age >= 45 & age < 55, '45-55', tmp)
@@ -2228,7 +1935,6 @@ sample.info = sample.info
   
   #plotting dxage##
   
-  library(ggh4x)
   age_grouping3 = function(age) {
     tmp = ifelse(age >= 30 & age < 50, '30-50', age)
     # tmp = ifelse(age >= 40 & age < 50, '40-50', tmp)
@@ -2471,10 +2177,8 @@ sample.info = sample.info
   last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '5','3+ years',last.mmg$mammogram)
   
   
-  library(ggh4x)
+
   
-  
-  merged.df.all.tmp = merge(merged.df.all.tmp,last.mmg[,c('ResearchId','mammogram')],all.x=T)
   age0 = merged.df.all.tmp[merged.df.all.tmp$mammogram %in% ('Never Had') | merged.df.all.tmp$group =='Control',]
   age1 = merged.df.all.tmp[merged.df.all.tmp$mammogram %in% ('< 6 months') | merged.df.all.tmp$group =='Control',]
   age2 = merged.df.all.tmp[merged.df.all.tmp$mammogram %in% c('0.5-1 year')| merged.df.all.tmp$group =='Control',]
@@ -2517,7 +2221,6 @@ sample.info = sample.info
     auc.plot.all.s3[[2]][1,],
     auc.plot.all.s4[[2]][1,])
   auc.res1$title = 'Last Mammogram'
-  #combined.auroc = combined.auroc[,colnames(combined.auroc) %in% colnames(auc.res1)]
   combined.auroc = rbind(combined.auroc,auc.res1[,colnames(auc.res1) %in% colnames(combined.auroc)])
   
   mmg_colors = c('All' = "#000004FF",
@@ -2743,7 +2446,7 @@ sample.info = sample.info
   auc.plot.all.s2[[2]]$var = 'HR-\nHER2-'
   auc.plot.all.s2[[2]]$var.group =  'Subtype'
   
-  
+  #sample size too small for this subtype
   #auc.plot.all.s3 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% age3$GRP_Id,],merged.df.all.tmp)
   #auc.plot.all.s3[[2]]$var = 'HR-\nHER2+'
   #auc.plot.all.s3[[2]]$var.group = 'Subtype'
@@ -3004,7 +2707,6 @@ sample.info = sample.info
                   position=position_dodge(0.05))+
     geom_point()+
     scale_y_continuous(limits=c(0,1))+
-    #scale_color_manual(values = c(dxage_colors))+ #+ ggtitle(title) +
     theme_bw()+ 
     #facet_grid(.~title)+
     theme(text = element_text(size=8),
@@ -3078,689 +2780,683 @@ sample.info = sample.info
   median.g = pca.coords$median.g
   a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
   b = survfit(a,newdata=data.frame(365*seq(1:5)))
-  test =T
-  if (test == T){      
-    score.cutoff.val = score.cutoff
-    pca.coords$median.g = factor(ifelse(pca.coords$methylation_score > score.cutoff.val,'Higher Test Median','Lower Test Median'),levels=c('Lower Test Median','Higher Test Median'))
+  score.cutoff.val = score.cutoff
+  pca.coords$median.g = factor(ifelse(pca.coords$methylation_score > score.cutoff.val,'Higher Test Median','Lower Test Median'),levels=c('Lower Test Median','Higher Test Median'))
+  
+  pca.coords$Cancer.g= ifelse(pca.coords$reported == 'Control',0,1)
+  female.weights= weightsf.females(pca.coords)
+  cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$logtest[3]
+  hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
+  median.g = pca.coords$median.g
+  max.time=5
+  a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
+  b = survfit(a,newdata=data.frame(365*seq(1:max.time)))
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim = c(0.85,1),
+    alpha = 0.6,
+    ggtheme = theme_bw(),
+    font.tickslab = c(8,'bold'), 
+    font.main = c(8, "bold",'black'),
+    font.x = c(8, "bold",'black'),
+    font.y = c(8, "bold",'black'),
+    font.legend = c(8)) + 
+    ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
+  
+  png(paste0(name,".scores.surv_median.all.png"),height = 1100, width = 1100,res=300)
+  print(plot4)
+  dev.off()
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim = c(0,1),
+    ggtheme = theme_bw(),
     
+    font.tickslab = c(8,'bold'), 
+    font.main = c(8, "bold",'black'),
+    font.x = c(8, "bold",'black'),
+    font.y = c(8, "bold",'black'),
+    alpha = 0.6,
+    font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
+  
+  png(paste0(name,".scores.surv_median.all.full.png"),height = 1100, width = 1100,res=300)
+  print(plot4)
+  dev.off()
+  
+  pca.coords$quartile <- dplyr::ntile(pca.coords$methylation_score, 4) 
+  quartile = pca.coords$quartile 
+  cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights))$logtest[3]
+  hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
+  survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights)
+  quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+  names(quart.col) = c("1","2","3","4")
+  quart.col.plot = quart.col[names(quart.col) %in%  pca.coords$quartile ]
+  plot4 = ggsurvplot(
+    fit = survfit.obj, 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = quart.col.plot,
+    legend.labs=names(quart.col.plot),
+    xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim=c(0.8,1),
+    ggtheme = theme_bw(),
+    
+    font.tickslab = c(8,'bold'), 
+    font.main = c(8, "bold",'black'),
+    font.x = c(8, "bold",'black'),
+    font.y = c(8, "bold",'black'),
+    alpha = 0.6,
+    font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+    ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+  
+  
+  png(paste0(name,".scores.surv_quart.all.cut.png"),height = 1100, width = 1100,res=300)
+  print(plot4)
+  dev.off()
+  
+  pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
+                                ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
+                                       ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
+                                              ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
+  quartile = pca.coords$quartile 
+  cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights))$logtest[3]
+  hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
+  survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights)
+  quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+  names(quart.col) = c("1","2","3","4")
+  quart.col.plot = quart.col[names(quart.col) %in%  pca.coords$quartile ]
+  plot4 = ggsurvplot(
+    fit = survfit.obj, 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = quart.col.plot,
+    legend.labs=names(quart.col.plot),
+    xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim=c(0.85,1),
+    ggtheme = theme_bw(),
+    
+    font.tickslab = c(8,'bold'), 
+    font.main = c(8, "bold",'black'),
+    font.x = c(8, "bold",'black'),
+    font.y = c(8, "bold",'black'),
+    alpha = 0.6,
+    font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+    ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+  
+  
+  png(paste0(name,".scores.surv_quart.breaks.cut.png"),height = 1100, width = 1100,res=300)
+  print(plot4)
+  dev.off()
+  
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit.obj, 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = quart.col.plot,
+    legend.labs=names(quart.col.plot),
+    xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim=c(0,1),
+    ggtheme = theme_bw(),
+    
+    font.tickslab = c(8,'bold'), 
+    font.main = c(8, "bold",'black'),
+    font.x = c(8, "bold",'black'),
+    font.y = c(8, "bold",'black'),
+    alpha = 0.6,
+    font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+    ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+  
+  png(paste0(name,".scores.surv_quart.all.png"),height = 1100, width = 1100,res=300)
+  print(plot4)
+  dev.off() 
+  
+  
+  km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
+  tmp = summary(km,times=c(1:3650))
+  km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
+  colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
+  #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
+  plot1= ggplot(km.summary.weighted.test) +
+    geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
+    
+    scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
+    scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
+    scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
+    theme_bw()+
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=8,face="bold"),
+          legend.position = "none")+
+    #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
+    ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
+  png(paste0(name,".scores.weighted.risk.all.all.png"),height = 900, width = 1100,res=300)
+  print(plot1)
+  dev.off()
+  
+  for (dxage in c('30-50','50-60','60-70','70+')) {
+    pca.coords.filt =  pca.coords[as.character(pca.coords$age_group3) %in% c(dxage) | pca.coords$Cancer == 'Control',]
+    female.weights.filt = female.weights[as.character(pca.coords$age_group3) %in% c(dxage)| pca.coords$Cancer == 'Control']
+    
+    
+    cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data = pca.coords.filt,weights=female.weights.filt))$logtest[3]
+    hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
+    median.g = pca.coords.filt$median.g
+    a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt)
+    b = survfit(a,newdata=data.frame(365*seq(1:5)))
+    
+    if (length(unique(pca.coords.filt$median.g)) > 1) {
+      plot4 = ggsurvplot(
+        fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = female.weights.filt), 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = c('#2a9d8f','#e9c46a'),
+        legend.labs=c("Higher Test Median","Lower Test Median"),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim = c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
+        ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
+      
+      png(paste0(name,".scores.surv_median.dxage.",dxage,".cut.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      plot4 = ggsurvplot(
+        fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = female.weights.filt), 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = c('#2a9d8f','#e9c46a'),
+        legend.labs=c("Higher Test Median","Lower Test Median"),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim = c(0,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
+      
+      png(paste0(name,".scores.surv_median.dxage.",dxage,".all.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      
+      pca.coords.filt$quartile <- dplyr::ntile(pca.coords.filt$methylation_score, 4) 
+      quartile = pca.coords.filt$quartile 
+      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
+      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
+      survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
+      quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+      names(quart.col) = c("1","2","3","4")
+      quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),  alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+      
+      
+      png(paste0(name,".scores.surv_quart.dxage.",dxage,".png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'), alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+      
+      png(paste0(name,".scores.surv_quart.dxage.",dxage,".full.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
+                                    ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
+                                           ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
+                                                  ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
+      quartile = pca.coords.filt$quartile 
+      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
+      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
+      survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
+      quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+      names(quart.col) = c("1","2","3","4")
+      quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+      
+      
+      png(paste0(name,".scores.surv_quart.fixed.dxage.",dxage,".png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      
+      km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt)
+      tmp = summary(km,times=c(1:3650))
+      km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
+      colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
+      #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
+      plot1= ggplot(km.summary.weighted.test) +
+        geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
+        
+        scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
+        scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
+        scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
+        theme_bw()+
+        theme(text = element_text(size=8),
+              axis.text=element_text(size=8, face = "bold"),
+              axis.title=element_text(size=8,face="bold"),
+              legend.position = "none")+
+        #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
+        ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
+      png(paste0(name,".scores.weighted.risk.dxage.",dxage,".all.png"),height = 900, width = 1100,res=300)
+      print(plot1)
+      dev.off()
+      
+      
+    }
+    
+    
+    
+    
+  }
+  
+  for (mmg.groups in c('< 6 months','0.5-1 year','1-2 years','2+ years','Never Had')) {
+    if (mmg.groups == c('2+ years')) {
+      pca.coords =merge(pred.df.targ.collapse.annotated, merged.df.all.tmp[merged.df.all.tmp$mammogram %in% c('2-3 years','3+ years') | merged.df.all.tmp$Cancer == 'Control',]) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
+      
+    } else {
+      pca.coords =merge(pred.df.targ.collapse.annotated,merged.df.all.tmp[merged.df.all.tmp$mammogram %in% (mmg.groups) | merged.df.all.tmp$Cancer == 'Control',]) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
+      
+    }
+    
+    pca.coords$median.g = ifelse(pca.coords$methylation_score > score.cutoff,'Higher Test Median','Lower Test Median')
     pca.coords$Cancer.g= ifelse(pca.coords$reported == 'Control',0,1)
     female.weights= weightsf.females(pca.coords)
+    female.weights.filt =female.weights
     cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$logtest[3]
     hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
-    median.g = pca.coords$median.g
-    if (dx.all == T) {
-      max.time = 10
-    } else {
-      max.time=5
-    }
-    a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
-    b = survfit(a,newdata=data.frame(365*seq(1:max.time)))
-    plot4 = ggsurvplot(
-      fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
-      risk.table = F,
-      #cumevents = TRUE,
-      palette = c('#2a9d8f','#e9c46a'),
-      legend.labs=c("Higher Test Median","Lower Test Median"),
-      xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-      ylim = c(0.85,1),
-      alpha = 0.6,
-      ggtheme = theme_bw(),
-      font.tickslab = c(8,'bold'), 
-      font.main = c(8, "bold",'black'),
-      font.x = c(8, "bold",'black'),
-      font.y = c(8, "bold",'black'),
-      font.legend = c(8)) + 
-      ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
-    
-    png(paste0(name,".scores.surv_median.all.png"),height = 1100, width = 1100,res=300)
-    print(plot4)
-    dev.off()
-    
-    plot4 = ggsurvplot(
-      fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
-      risk.table = F,
-      #cumevents = TRUE,
-      palette = c('#2a9d8f','#e9c46a'),
-      legend.labs=c("Higher Test Median","Lower Test Median"),
-      xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-      ylim = c(0,1),
-      ggtheme = theme_bw(),
+    if (length(unique(pca.coords$median.g)) > 1) {
+      plot4 = ggsurvplot(
+        fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = c('#2a9d8f','#e9c46a'),
+        legend.labs=c("Higher Test Median","Lower Test Median"),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim = c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
+        ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
       
-      font.tickslab = c(8,'bold'), 
-      font.main = c(8, "bold",'black'),
-      font.x = c(8, "bold",'black'),
-      font.y = c(8, "bold",'black'),
-      alpha = 0.6,
-      font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
-    
-    png(paste0(name,".scores.surv_median.all.full.png"),height = 1100, width = 1100,res=300)
-    print(plot4)
-    dev.off()
-    
-    pca.coords$quartile <- dplyr::ntile(pca.coords$methylation_score, 4) 
-    quartile = pca.coords$quartile 
-    cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights))$logtest[3]
-    hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
-    survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights)
-    quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-    names(quart.col) = c("1","2","3","4")
-    quart.col.plot = quart.col[names(quart.col) %in%  pca.coords$quartile ]
-    plot4 = ggsurvplot(
-      fit = survfit.obj, 
-      risk.table = F,
-      #cumevents = TRUE,
-      palette = quart.col.plot,
-      legend.labs=names(quart.col.plot),
-      xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-      ylim=c(0.8,1),
-      ggtheme = theme_bw(),
+      png(paste0(name,".scores.surv_median.mmg.",mmg.groups,".cut.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
       
-      font.tickslab = c(8,'bold'), 
-      font.main = c(8, "bold",'black'),
-      font.x = c(8, "bold",'black'),
-      font.y = c(8, "bold",'black'),
-      alpha = 0.6,
-      font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-      ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-    
-    
-    png(paste0(name,".scores.surv_quart.all.cut.png"),height = 1100, width = 1100,res=300)
-    print(plot4)
-    dev.off()
-    
-    pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
-                                  ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
-                                         ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
-                                                ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
-    quartile = pca.coords$quartile 
-    cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights))$logtest[3]
-    hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
-    survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights)
-    quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-    names(quart.col) = c("1","2","3","4")
-    quart.col.plot = quart.col[names(quart.col) %in%  pca.coords$quartile ]
-    plot4 = ggsurvplot(
-      fit = survfit.obj, 
-      risk.table = F,
-      #cumevents = TRUE,
-      palette = quart.col.plot,
-      legend.labs=names(quart.col.plot),
-      xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-      ylim=c(0.85,1),
-      ggtheme = theme_bw(),
+      plot4 = ggsurvplot(
+        fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = c('#2a9d8f','#e9c46a'),
+        legend.labs=c("Higher Test Median","Lower Test Median"),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim = c(0,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
       
-      font.tickslab = c(8,'bold'), 
-      font.main = c(8, "bold",'black'),
-      font.x = c(8, "bold",'black'),
-      font.y = c(8, "bold",'black'),
-      alpha = 0.6,
-      font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-      ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-    
-    
-    png(paste0(name,".scores.surv_quart.breaks.cut.png"),height = 1100, width = 1100,res=300)
-    print(plot4)
-    dev.off()
-    
-    
-    
-    plot4 = ggsurvplot(
-      fit = survfit.obj, 
-      risk.table = F,
-      #cumevents = TRUE,
-      palette = quart.col.plot,
-      legend.labs=names(quart.col.plot),
-      xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-      ylim=c(0,1),
-      ggtheme = theme_bw(),
-      
-      font.tickslab = c(8,'bold'), 
-      font.main = c(8, "bold",'black'),
-      font.x = c(8, "bold",'black'),
-      font.y = c(8, "bold",'black'),
-      alpha = 0.6,
-      font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-      ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-    
-    png(paste0(name,".scores.surv_quart.all.png"),height = 1100, width = 1100,res=300)
-    print(plot4)
-    dev.off() 
-    
-    
-    km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
-    tmp = summary(km,times=c(1:3650))
-    km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
-    colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
-    #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
-    plot1= ggplot(km.summary.weighted.test) +
-      geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
-      
-      scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
-      scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
-      scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
-      theme_bw()+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+
-      #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
-      ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
-    png(paste0(name,".scores.weighted.risk.all.all.png"),height = 900, width = 1100,res=300)
-    print(plot1)
-    dev.off()
-    
-    for (dxage in c('30-50','50-60','60-70','70+')) {
-      pca.coords.filt =  pca.coords[as.character(pca.coords$age_group3) %in% c(dxage) | pca.coords$Cancer == 'Control',]
-      female.weights.filt = female.weights[as.character(pca.coords$age_group3) %in% c(dxage)| pca.coords$Cancer == 'Control']
+      png(paste0(name,".scores.surv_median.mmg.",mmg.groups,".all.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
       
       
-      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data = pca.coords.filt,weights=female.weights.filt))$logtest[3]
-      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
-      median.g = pca.coords.filt$median.g
-      a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt)
-      b = survfit(a,newdata=data.frame(365*seq(1:5)))
-      
-      if (length(unique(pca.coords.filt$median.g)) > 1) {
-        plot4 = ggsurvplot(
-          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = female.weights.filt), 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = c('#2a9d8f','#e9c46a'),
-          legend.labs=c("Higher Test Median","Lower Test Median"),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim = c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
-          ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
+      pca.coords$quartile <- dplyr::ntile(pca.coords$methylation_score, 4) 
+      quartile = pca.coords$quartile 
+      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt))$logtest[3]
+      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights.filt))$coefficients[2],digits=3)
+      survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt)
+      quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+      names(quart.col) = c("1","2","3","4")
+      quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0.9,1),
+        ggtheme = theme_bw(),
         
-        png(paste0(name,".scores.surv_median.dxage.",dxage,".cut.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        plot4 = ggsurvplot(
-          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = female.weights.filt), 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = c('#2a9d8f','#e9c46a'),
-          legend.labs=c("Higher Test Median","Lower Test Median"),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim = c(0,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_median.dxage.",dxage,".all.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        pca.coords.filt$quartile <- dplyr::ntile(pca.coords.filt$methylation_score, 4) 
-        quartile = pca.coords.filt$quartile 
-        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
-        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
-        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
-        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-        names(quart.col) = c("1","2","3","4")
-        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),  alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        
-        png(paste0(name,".scores.surv_quart.dxage.",dxage,".png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'), alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_quart.dxage.",dxage,".full.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
-                                      ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
-                                             ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
-                                                    ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
-        quartile = pca.coords.filt$quartile 
-        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
-        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
-        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
-        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-        names(quart.col) = c("1","2","3","4")
-        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        
-        png(paste0(name,".scores.surv_quart.fixed.dxage.",dxage,".png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt)
-        tmp = summary(km,times=c(1:3650))
-        km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
-        colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
-        #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
-        plot1= ggplot(km.summary.weighted.test) +
-          geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
-          
-          scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
-          scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
-          scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
-          theme_bw()+
-          theme(text = element_text(size=8),
-                axis.text=element_text(size=8, face = "bold"),
-                axis.title=element_text(size=8,face="bold"),
-                legend.position = "none")+
-          #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
-          ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
-        png(paste0(name,".scores.weighted.risk.dxage.",dxage,".all.png"),height = 900, width = 1100,res=300)
-        print(plot1)
-        dev.off()
-        
-        
-      }
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),  alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
       
       
+      png(paste0(name,".scores.surv_quart.mmg.",mmg.groups,".png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
       
       
-    }
-    
-    for (mmg.groups in c('< 6 months','0.5-1 year','1-2 years','2+ years','Never Had')) {
-      if (mmg.groups == c('2+ years')) {
-        pca.coords =merge(pred.df.targ.collapse.annotated, merged.df.all.tmp[merged.df.all.tmp$mammogram %in% c('2-3 years','3+ years') | merged.df.all.tmp$Cancer == 'Control',]) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0,1),
+        ggtheme = theme_bw(),
         
-      } else {
-        pca.coords =merge(pred.df.targ.collapse.annotated,merged.df.all.tmp[merged.df.all.tmp$mammogram %in% (mmg.groups) | merged.df.all.tmp$Cancer == 'Control',]) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
-        
-      }
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'), alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
       
-      pca.coords$median.g = ifelse(pca.coords$methylation_score > score.cutoff,'Higher Test Median','Lower Test Median')
-      pca.coords$Cancer.g= ifelse(pca.coords$reported == 'Control',0,1)
-      female.weights= weightsf.females(pca.coords)
-      female.weights.filt =female.weights
-      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$logtest[3]
-      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
-      if (length(unique(pca.coords$median.g)) > 1) {
-        plot4 = ggsurvplot(
-          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = c('#2a9d8f','#e9c46a'),
-          legend.labs=c("Higher Test Median","Lower Test Median"),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim = c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
-          ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_median.mmg.",mmg.groups,".cut.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        plot4 = ggsurvplot(
-          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights), 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = c('#2a9d8f','#e9c46a'),
-          legend.labs=c("Higher Test Median","Lower Test Median"),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim = c(0,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_median.mmg.",mmg.groups,".all.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        pca.coords$quartile <- dplyr::ntile(pca.coords$methylation_score, 4) 
-        quartile = pca.coords$quartile 
-        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt))$logtest[3]
-        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights.filt))$coefficients[2],digits=3)
-        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt)
-        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-        names(quart.col) = c("1","2","3","4")
-        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),  alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        
-        png(paste0(name,".scores.surv_quart.mmg.",mmg.groups,".png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'), alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_quart.mmg.",mmg.groups,".full.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
-                                      ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
-                                             ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
-                                                    ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
-        quartile = pca.coords$quartile 
-        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt))$logtest[3]
-        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights.filt))$coefficients[2],digits=3)
-        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt)
-        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-        names(quart.col) = c("1","2","3","4")
-        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords$quartile ]
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        
-        png(paste0(name,".scores.surv_quart.fixed.mmg.",mmg.groups,".png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights.filt)
-        tmp = summary(km,times=c(1:3650))
-        km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
-        colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
-        #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
-        plot1= ggplot(km.summary.weighted.test) +
-          geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
-          
-          scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
-          scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
-          scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
-          theme_bw()+
-          theme(text = element_text(size=8),
-                axis.text=element_text(size=8, face = "bold"),
-                axis.title=element_text(size=8,face="bold"),
-                legend.position = "none")+
-          #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
-          ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
-        png(paste0(name,".scores.weighted.risk.mmg.",mmg.groups,".all.png"),height = 900, width = 1100,res=300)
-        print(plot1)
-        dev.off()
-      }
-    }
-    
-    for (subtypes in c('HR+\nHER2-','HR-\nHER2-','HR+\nHER2+','HR-\nHER2+','NR')) {
-      subtypes.name = gsub('\n','',subtypes)
-      pca.coords =merge(pred.df.targ.collapse.annotated,merged.df.all.tmp[merged.df.all.tmp[,'HR.HER2'] %in% c(subtypes,'Control'),]) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
-      print(table(pca.coords$HR.HER2))
-      pca.coords$median.g = ifelse(pca.coords$methylation_score > score.cutoff,'Higher Test Median','Lower Test Median')
-      pca.coords$Cancer.g= ifelse(pca.coords$reported == 'Control',0,1)
-      female.weights= weightsf.females(pca.coords)
-      female.weights.filt =female.weights
+      png(paste0(name,".scores.surv_quart.mmg.",mmg.groups,".full.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
       
-      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$logtest[3]
-      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
-      if (length(unique(pca.coords$median.g)) > 1) {
-        plot4 = ggsurvplot(
-          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights.filt), 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = c('#2a9d8f','#e9c46a'),
-          legend.labs=c("Higher Test Median","Lower Test Median"),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim = c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
-          ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
+      pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
+                                    ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
+                                           ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
+                                                  ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
+      quartile = pca.coords$quartile 
+      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt))$logtest[3]
+      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords,weights=female.weights.filt))$coefficients[2],digits=3)
+      survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords,weights = female.weights.filt)
+      quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+      names(quart.col) = c("1","2","3","4")
+      quart.col.plot = quart.col[names(quart.col) %in%  pca.coords$quartile ]
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0.9,1),
+        ggtheme = theme_bw(),
         
-        png(paste0(name,".scores.surv_median.subtype.",subtypes.name,".cut.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        plot4 = ggsurvplot(
-          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights.filt), 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = c('#2a9d8f','#e9c46a'),
-          legend.labs=c("Higher Test Median","Lower Test Median"),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim = c(0,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_median.subtype.",subtypes.name,".all.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        pca.coords.filt =pca.coords
-        pca.coords.filt$quartile <- dplyr::ntile(pca.coords.filt$methylation_score, 4) 
-        quartile = pca.coords.filt$quartile 
-        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
-        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
-        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
-        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-        names(quart.col) = c("1","2","3","4")
-        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),  alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        
-        png(paste0(name,".scores.surv_quart.subtype.",subtypes.name,".png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'), alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        png(paste0(name,".scores.surv_quart.subtype.",subtypes.name,".full.png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
-                                      ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
-                                             ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
-                                                    ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
-        quartile = pca.coords.filt$quartile 
-        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
-        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
-        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
-        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-        names(quart.col) = c("1","2","3","4")
-        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-        plot4 = ggsurvplot(
-          fit = survfit.obj, 
-          risk.table = F,
-          #cumevents = TRUE,
-          palette = quart.col.plot,
-          legend.labs=names(quart.col.plot),
-          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-          ylim=c(0.9,1),
-          ggtheme = theme_bw(),
-          
-          font.tickslab = c(8,'bold'), 
-          font.main = c(8, "bold",'black'),
-          font.x = c(8, "bold",'black'),
-          font.y = c(8, "bold",'black'),
-          alpha = 0.6,
-          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-        
-        
-        png(paste0(name,".scores.surv_quart.fixed.subtype.",subtypes.name,".png"),height = 1100, width = 1100,res=300)
-        print(plot4)
-        dev.off()
-        
-        
-        km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt)
-        tmp = summary(km,times=c(1:3650))
-        km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
-        colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
-        #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
-        plot1= ggplot(km.summary.weighted.test) +
-          geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
-          
-          scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
-          scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
-          scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
-          theme_bw()+
-          theme(text = element_text(size=8),
-                axis.text=element_text(size=8, face = "bold"),
-                axis.title=element_text(size=8,face="bold"),
-                legend.position = "none")+
-          #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
-          ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
-        png(paste0(name,".scores.weighted.risk.subtype.",subtypes.name,".all.png"),height = 900, width = 1100,res=300)
-        print(plot1)
-        dev.off()
-      }
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
       
+      
+      png(paste0(name,".scores.surv_quart.fixed.mmg.",mmg.groups,".png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      
+      km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights.filt)
+      tmp = summary(km,times=c(1:3650))
+      km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
+      colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
+      #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
+      plot1= ggplot(km.summary.weighted.test) +
+        geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
+        
+        scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
+        scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
+        scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
+        theme_bw()+
+        theme(text = element_text(size=8),
+              axis.text=element_text(size=8, face = "bold"),
+              axis.title=element_text(size=8,face="bold"),
+              legend.position = "none")+
+        #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
+        ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
+      png(paste0(name,".scores.weighted.risk.mmg.",mmg.groups,".all.png"),height = 900, width = 1100,res=300)
+      print(plot1)
+      dev.off()
     }
   }
+  
+  for (subtypes in c('HR+\nHER2-','HR-\nHER2-','HR+\nHER2+','HR-\nHER2+','NR')) {
+    subtypes.name = gsub('\n','',subtypes)
+    pca.coords =merge(pred.df.targ.collapse.annotated,merged.df.all.tmp[merged.df.all.tmp[,'HR.HER2'] %in% c(subtypes,'Control'),]) # merge(pred.df.targ.collapse.annotated, merged.df.all.tmp
+    print(table(pca.coords$HR.HER2))
+    pca.coords$median.g = ifelse(pca.coords$methylation_score > score.cutoff,'Higher Test Median','Lower Test Median')
+    pca.coords$Cancer.g= ifelse(pca.coords$reported == 'Control',0,1)
+    female.weights= weightsf.females(pca.coords)
+    female.weights.filt =female.weights
+    
+    cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$logtest[3]
+    hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
+    if (length(unique(pca.coords$median.g)) > 1) {
+      plot4 = ggsurvplot(
+        fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights.filt), 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = c('#2a9d8f','#e9c46a'),
+        legend.labs=c("Higher Test Median","Lower Test Median"),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim = c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
+        ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
+      
+      png(paste0(name,".scores.surv_median.subtype.",subtypes.name,".cut.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      plot4 = ggsurvplot(
+        fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords,weights = female.weights.filt), 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = c('#2a9d8f','#e9c46a'),
+        legend.labs=c("Higher Test Median","Lower Test Median"),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim = c(0,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
+      
+      png(paste0(name,".scores.surv_median.subtype.",subtypes.name,".all.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      pca.coords.filt =pca.coords
+      pca.coords.filt$quartile <- dplyr::ntile(pca.coords.filt$methylation_score, 4) 
+      quartile = pca.coords.filt$quartile 
+      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
+      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
+      survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
+      quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+      names(quart.col) = c("1","2","3","4")
+      quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),  alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+      
+      
+      png(paste0(name,".scores.surv_quart.subtype.",subtypes.name,".png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'), alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+      
+      png(paste0(name,".scores.surv_quart.subtype.",subtypes.name,".full.png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
+                                    ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
+                                           ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
+                                                  ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
+      quartile = pca.coords.filt$quartile 
+      cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt))$logtest[3]
+      hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=female.weights.filt))$coefficients[2],digits=3)
+      survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = female.weights.filt)
+      quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+      names(quart.col) = c("1","2","3","4")
+      quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+      plot4 = ggsurvplot(
+        fit = survfit.obj, 
+        risk.table = F,
+        #cumevents = TRUE,
+        palette = quart.col.plot,
+        legend.labs=names(quart.col.plot),
+        xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+        ylim=c(0.9,1),
+        ggtheme = theme_bw(),
+        
+        font.tickslab = c(8,'bold'), 
+        font.main = c(8, "bold",'black'),
+        font.x = c(8, "bold",'black'),
+        font.y = c(8, "bold",'black'),
+        alpha = 0.6,
+        font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+        ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+      
+      
+      png(paste0(name,".scores.surv_quart.fixed.subtype.",subtypes.name,".png"),height = 1100, width = 1100,res=300)
+      print(plot4)
+      dev.off()
+      
+      
+      km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=female.weights.filt)
+      tmp = summary(km,times=c(1:3650))
+      km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
+      colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
+      #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
+      plot1= ggplot(km.summary.weighted.test) +
+        geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
+        
+        scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
+        scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
+        scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
+        theme_bw()+
+        theme(text = element_text(size=8),
+              axis.text=element_text(size=8, face = "bold"),
+              axis.title=element_text(size=8,face="bold"),
+              legend.position = "none")+
+        #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
+        ylab('Breast Cancer Probability (%)') + xlab('Time (Years)') 
+      png(paste0(name,".scores.weighted.risk.subtype.",subtypes.name,".all.png"),height = 900, width = 1100,res=300)
+      print(plot1)
+      dev.off()
+    }
+    
+  }
+  
   
   #subtyping
   
