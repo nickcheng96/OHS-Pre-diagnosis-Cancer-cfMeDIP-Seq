@@ -25,16 +25,6 @@ train_test_partition_cv.singlesex = function(year2_diagnosis_samples, splits = 1
   return(return_df)
 }
 
-
-auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
-  tmp = prediction_table
-  tmp = tmp[order(-tmp$methylation_score),]
-  pred = prediction(predictions = c(tmp$methylation_score) ,labels =  tmp$reported, labels)
-  perf_AUC=performance(pred,"auc") #Calculate the AUC value
-  AUC=perf_AUC@y.values[[1]]
-  return(AUC)
-}
-
 predictive.models.glm = function(targ.matrix1,
                                  merged.df,
                                  train.set,
@@ -283,10 +273,9 @@ for (fold in foldno){
     res.df$window = rownames(res.df)
     res.df$seed = seedno
     res.df$fold = fold
-    end = Sys.time()
     saveRDS(res.df,paste0(savedir,i,'.',seedno,'.',fold,'.dmr.RDS'))
     saveRDS(train.set,paste0(savedir,i,'.',seedno,'.',fold,'.samplesplit.RDS'))
-    print(start-end)
+
     
     
     
@@ -316,9 +305,10 @@ for (fold in foldno) {
     
     #selecting features for ML models
     for (dir in c('hyper')){ #hypermethylated regions used in study
-      predir=paste0(savedir,'predictions.',dir,'/')
+      predir=paste0(wkdir,'/',marker,'/',dir,'/')
       dir.create(predir, recursive = T)
       
+
       if(file.exists(paste0(predir,i,'.',seedno,'.',fold,'.predictions.RDS')) == F) {
         
         #ordering and selecting top DMRs

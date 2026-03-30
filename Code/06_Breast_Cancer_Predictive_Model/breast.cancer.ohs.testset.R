@@ -6,6 +6,7 @@ library(DESeq2)
 library(matrixTests)
 library(gridExtra)
 library(caret)
+library(glm)
 library(pROC)
 library(stringr)
 library(parallel)
@@ -20,27 +21,24 @@ library(ggplot2)
 library(ggh4x)
 library(survcomp)
 library(cenROC)
+library(BiocParallel)
 
+
+options(expressions = 5e5)
+
+ncores = 10
+register(MulticoreParam(ncores))
+
+####functions#####
 auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
   tmp = prediction_table
   tmp = tmp[order(-tmp$methylation_score),]
-  #labels = c(tmp$reported)
   pred = prediction(predictions = c(tmp$methylation_score) ,labels =  tmp$reported, labels)
   perf_AUC=performance(pred,"auc") #Calculate the AUC value
   AUC=perf_AUC@y.values[[1]]
   return(AUC)
 }
-autosome_filt = function(medips.count_df) {
-  tmp =gsub(':.*','',medips.count_df)
-  return_df = medips.count_df[!tmp %in% c('chrY','chrX','chrM')]
-  return(return_df)
-}
 
-options(expressions = 5e5)
-library(DESeq2)
-library("BiocParallel")
-ncores = 20
-register(MulticoreParam(ncores))
 
 
 predictive.models.glm = function(targ.matrix1,
@@ -49,11 +47,8 @@ predictive.models.glm = function(targ.matrix1,
                                  test.set,
                                  targ.features,
                                  feats,
-                                 feature.type,
-                                 stat.test,no_cores=5, standardize = F) {
-  library(caret)
-  library(glmnet)
-  library(ROCR)
+                                 no_cores=ncores) {
+
   auc_calc = function(prediction_table,labels = c('Control','Cancer')) {
     tmp = prediction_table
     tmp = tmp[order(-tmp$methylation_score),]
@@ -258,14 +253,10 @@ predictive.models.glm = function(targ.matrix1,
     
     
     #annotating scores
-    results.df$feature = feature.type
-    results.df$test = stat.test
     results.df$n.features = fl
     results.df.all = rbind(results.df.all,results.df)
     
     
-    feature.weights$feature = feature.type
-    feature.weights$test = stat.test
     feature.weights$n.features = fl
     feature.weights.all = rbind(feature.weights.all,feature.weights)
     end = Sys.time()
@@ -279,61 +270,52 @@ predictive.models.glm = function(targ.matrix1,
   return(return.list)
 }
 
-####selecting top performing parameter#####
+####setting work directory#####
+savedir='/local/save/directory'
+setwd(savedir)
 all.sample.info = readRDS('sample.info.RDS') 
 discovery.set = all.sample.info[all.sample.info$data.partition == 'Discovery',]
 ohs.test.set = all.sample.info[all.sample.info$data.partition != 'Discovery',]
-savedir='/local/save/directory'
-setwd(savedir)
 
-dmrcalling = T
-#female
-if (dmrcalling == T) {
-  dds = readRDS('ohs.1000.gehancer.dds.RDS')
-  
-  colData(dds)$total_reads= colData(dds)$total/1000000
-  merged.df.filt.targ = discovery.set
-  
-  windows = rownames(dds)
-  windows = windows[!grepl('chrX|chrY',windows)]
-  
-  
-  targ.samples = discovery.set[discovery.set$Sex == 'Female',]
-  targ.samples = unique(targ.samples[targ.samples$GRP_Id %in% colnames(dds),])
-  dds = estimateSizeFactors(dds[windows,targ.samples$GRP_Id])
-  dds$condition = dds$group
-  
-  colData(dds)$filler = factor(colData(dds)$filler,levels= c('MFiller','UFiller'))
-  colData(dds)$group = factor(ifelse(colData(dds)$Cancer =='Control','Control','Cancer'),levels = c('Control','Cancer'))
-  windows = rownames(dds)
-  windows = windows[!grepl('chrX|chrY',windows)]
-  
-  ##breast cancer vs controls##
-  merged.df.filt.targ = discovery.set[discovery.set$GRP_Id %in% colnames(dds),]
-  merged.df.filt.targ = merged.df.filt.targ
-  dds.filt = dds[windows,merged.df.filt.targ$GRP_Id]
-  mm = model.matrix(~ filler + group, colData(dds.filt)) 
-  
-  dds.filt = dds.filt[rowSums(counts(dds.filt)) > 0,]
-  dds.filt$condition = dds.filt$group
-  
-  
-  ddssva <- DESeq(dds.filt,full = mm,parallel=T) #differential methylation analysis
-  res.df = results(ddssva,contrast = list('groupCancer')) #generating results table
-  saveRDS(res.df,'discovery.breast.genhancer.dmrs.RDS')
-  
-  
-}
+#discovery set dmrs#
+dds = readRDS('ohs.1000.gehancer.dds.RDS')
+
+colData(dds)$total_reads= colData(dds)$total/1000000
+merged.df.filt.targ = discovery.set
+
+windows = rownames(dds)
+windows = windows[!grepl('chrX|chrY',windows)]
+
+
+targ.samples = discovery.set[discovery.set$Sex == 'Female',]
+targ.samples = unique(targ.samples[targ.samples$GRP_Id %in% colnames(dds),])
+dds = estimateSizeFactors(dds[windows,targ.samples$GRP_Id])
+dds$condition = dds$group
+
+colData(dds)$filler = factor(colData(dds)$filler,levels= c('MFiller','UFiller'))
+colData(dds)$group = factor(ifelse(colData(dds)$Cancer =='Control','Control','Cancer'),levels = c('Control','Cancer'))
+windows = rownames(dds)
+windows = windows[!grepl('chrX|chrY',windows)]
+
+##breast cancer vs controls##
+merged.df.filt.targ = discovery.set[discovery.set$GRP_Id %in% colnames(dds),]
+merged.df.filt.targ = merged.df.filt.targ
+dds.filt = dds[windows,merged.df.filt.targ$GRP_Id]
+mm = model.matrix(~ filler + group, colData(dds.filt)) 
+
+dds.filt = dds.filt[rowSums(counts(dds.filt)) > 0,]
+dds.filt$condition = dds.filt$group
+
+ddssva <- DESeq(dds.filt,full = mm,parallel=T) #differential methylation analysis
+res.df = results(ddssva,contrast = list('groupCancer')) #generating results table
+res.df$window =rownames(res.df)
+saveRDS(res.df,'discovery.breast.genhancer.DMRs.RDS')
+
 
 
 #####genhancer only ml####
-results.df.all = NULL
-feature = 'dmr'
-res.df = readRDS('discovery.breast.genhancer.dmrs.RDS')
-
-res.df$window =rownames(res.df)
-directions = 'hyper'
 dds = readRDS(paste0('ohs.1000.gehancer.dds.RDS'))
+
 windows = rownames(dds)
 windows = windows[!grepl('chrX|chrY',windows)]
 
@@ -345,8 +327,9 @@ dds$condition = dds$group
 sample.matrix = counts(dds, normalized = T)
 
 fc.cutoff=0.25
+directions = 'hyper'
 results.df.all = NULL
-
+score.cutoff.breast = 0.42
 for (fc in fc.cutoff) {
   for (d in directions) {
     
@@ -366,9 +349,8 @@ for (fc in fc.cutoff) {
     feature.weights.all = NULL
     targ.features = rownames(res.df.targ)
     
-    train.set= discovery.set[discovery.set$Sex == 'Female',]
-    test.set = ohs.test.set[ohs.test.set$GRP_Id %in% colnames(sample.matrix),]
-    test.set = test.set[test.set$Sex == 'Female',]
+    train.set= all.sample.info[all.sample.info$Sex == 'Female' & all.sample.info$data.partition == 'Discovery',,]
+    train.set= all.sample.info[all.sample.info$Sex == 'Female' & all.sample.info$data.partition != 'Discovery',,]
     results.df = NULL
     n.features = 90
     for (fl in n.features){
@@ -385,10 +367,7 @@ for (fc in fc.cutoff) {
       targ.matrix=  merge(targ.matrix.base,all.sample.info[,c('GRP_Id','group')],by='GRP_Id')
       targ.features1 =c(targ.features.base)  
       rownames(targ.matrix) = targ.matrix$GRP_Id
-      
-      
-      
-      
+
       tmp.res = mclapply(1:100, function(seednum) {
         set.seed(seednum)
         res.df.all = predictive.models.glm(targ.matrix,
@@ -396,9 +375,7 @@ for (fc in fc.cutoff) {
                                            train.set,
                                            test.set,
                                            targ.features =targ.features1,
-                                           feats = fl,
-                                           feature.type = 'gs',
-                                           stat.test ='gs')
+                                           feats = fl)
         perf.df = res.df.all[[1]] 
       },mc.cores=10)
       
@@ -418,36 +395,27 @@ for (fc in fc.cutoff) {
       
       results.df.all = rbind(results.df.all,combined.collapse)
       
-      results.df.all[results.df.all$model =='logreg.old.alpha1',]
-      
       
       
     }
 
-    saveRDS('validation.performance.RDS')
 
     
   }
   
   
 }
-
-
-
-
-
-
+saveRDS(results.df.all,'validation.performance.RDS')
 
 
 #####ploting performance####
-figdir ='/figures/directory/'
+figdir =paste0(savedir,'figures/')
 
 dir.create(figdir,recursive = T)
-pred.df.targ = readRDS('validation.performance.RDS')
+pred.df.targ = results.df.all
 name = paste0(figdir,'brca.ohs.test');
 merged.df.all = ohs.test.set
 sample.info = ohs.test.set
-dx.all = T
 score.cutoff=0.425
 cutpoint.use=T
 
@@ -565,78 +533,7 @@ cutpoint.use=T
       mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score > cp.youden,'High Predicted Risk','Low Predicted Risk')
       mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
       mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
-      subject1 = mean.perf.df.targ.tmp.merged
-      female.ohs.qx.weighting = function(subject,combined.info.all) {
-        #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.breast','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
-        combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Female',]
-        combined.info.all.male = combined.info.all.male[combined.info.all.male$Cancer %in% c('Control','Breast'),]
-        combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-        combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-        #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
-        age.groups =  unique(combined.info.all.male$age_group)
-        fh.groups = unique(combined.info.all.male$Family.history.breast)
-        alc.groups = unique(combined.info.all.male$Alch.con.group)
-        smk.groups = unique(combined.info.all.male$Smoking.Frequency)
-        control.samples = subject[subject$reported == 'Control',]
-        cancer.samples = subject[subject$reported != 'Control',]
-        
-        control.samples = combined.info.all[combined.info.all$GRP_Id %in% control.samples$GRP_Id,]
-        cancer.samples = combined.info.all[combined.info.all$GRP_Id %in% cancer.samples$GRP_Id,]
-        
-        ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
-        control.weight.samples = NULL
-        for (age in age.groups ) {
-          for (fh in fh.groups ){
-            for (alc in alc.groups) {
-              for (smk in smk.groups ){
-                group.combination = paste(age,fh,alc,smk,sep='.')
-                targ.control.cohort = control.samples[which(control.samples$age_group == age &
-                                                              control.samples$Family.history.breast == fh &
-                                                              control.samples$Alch.con.group == alc  &
-                                                              control.samples$Smoking.Frequency == smk ) ,]
-                if (nrow(targ.control.cohort)>0){
-                  cohort.freq =  ohs.pop.samples[which(ohs.pop.samples$age_group == age &
-                                                         ohs.pop.samples$Family.history.breast == fh &
-                                                         ohs.pop.samples$Alch.con.group == alc &
-                                                         ohs.pop.samples$Smoking.Frequency == smk ),]
-                  
-                  targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
-                  
-                  control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
-                }
-                
-                
-              }
-            }
-          }
-        }
-        
-        if (nrow(control.weight.samples) < nrow(control.samples)) {
-          exc.samples = control.samples[!control.samples$GRP_Id %in% control.weight.samples$GRP_Id,]
-          for (r in 1:nrow(exc.samples)) {
-            print(r)
-            targ.sample = exc.samples[r,]
-            #fh, alc, smk, bmi
-            non.na.vars = c('age_group','ALC_CUR_FREQ','SMK_CIG_STATUS','DIS_CANCER_F_EVER')
-            non.na.vars = non.na.vars[which(!is.na(targ.sample[,non.na.vars]))]
-            
-            cohort.freq =  ohs.pop.samples
-            for (v in non.na.vars) {
-              cohort.freq =  cohort.freq[which(cohort.freq[,v] == targ.sample[,v]) ,]
-              targ.freq = control.samples[which(control.samples[,v] == targ.sample[,v])  ,]
-            }
-            targ.sample$weight = nrow(cohort.freq)/nrow(targ.freq)
-            control.weight.samples = rbind(control.weight.samples,targ.sample)
-          }
-        }
-        cancer.samples$weight=1
-        return.df = rbind(control.weight.samples,cancer.samples)
-        return.df = return.df[order(match(return.df$GRP_Id,subject$GRP_Id)),]
-        return(return.df$weight)
-        
-      }
-      
+
       x = merge(mean.perf.df.targ.tmp.merged,sample.info)
       x$event=ifelse(x[,'reported'] =='Cancer',1,0)
       x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
@@ -647,8 +544,7 @@ cutpoint.use=T
       
       mean.perf.df.targ.tmp.merged$weighting = male.weights
       
-      #mean.perf.df.targ.tmp.merged$weighting = female.ohs.qx.weighting(mean.perf.df.targ.tmp.merged,merged.df.all.tmp[merged.df.all.tmp$GRP_Id %in% mean.perf.df.targ.tmp.merged$GRP_Id,])
-      
+
       
       #normalized weighting
       weighted.df = NULL
@@ -883,57 +779,17 @@ cutpoint.use=T
       mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score >= cp.youden,'High Predicted Risk','Low Predicted Risk')
       mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
       mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
-      subject1 = mean.perf.df.targ.tmp.merged
-      female.ohs.qx.weighting = function(subject1,combined.info.all) {
-        subject = merge(subject1, sample.info.filt.pretime[,c('GRP_Id','Smoking.Frequency','age_group','Family.history.breast','Alch.con.group')],by='GRP_Id')
-        #subject = merge(mean.perf.df.targ.tmp.merged,sample.info[,c('GRP_Id','age_group','Family.history.breast','Alch.con.group','Smoking.Frequency')],by='GRP_Id')
-        combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
-        combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-        combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        #bmi.short.groups = unique(combined.info.all.male$bmi.group.short)
-        #bmi.long.groups = unique(combined.info.all.male$bmi.group.long)
-        age.groups =  unique(combined.info.all.male$age_group)
-        fh.groups = unique(combined.info.all.male$Family.history.breast)
-        alc.groups = unique(combined.info.all.male$Alch.con.group)
-        smk.groups = unique(combined.info.all.male$Smoking.Frequency)
-        control.samples = subject[subject$reported == 'Control',]
-        cancer.samples = subject[subject$reported != 'Control',]
-        
-        ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
-        control.weight.samples = NULL
-        for (age in age.groups ) {
-          for (fh in fh.groups ){
-            for (alc in alc.groups) {
-              for (smk in smk.groups ){
-                group.combination = paste(age,fh,alc,smk,sep='.')
-                targ.control.cohort = control.samples[control.samples$age_group == age &
-                                                        control.samples$Family.history.breast == fh &
-                                                        control.samples$Alch.con.group == alc &
-                                                        control.samples$Smoking.Frequency == smk ,]
-                if (nrow(targ.control.cohort)>0){
-                  cohort.freq =  ohs.pop.samples[ohs.pop.samples$age_group == age &
-                                                   ohs.pop.samples$Family.history.breast == fh &
-                                                   ohs.pop.samples$Alch.con.group == alc &
-                                                   ohs.pop.samples$Smoking.Frequency == smk ,]
-                  
-                  targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
-                  
-                  control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
-                }
-                
-                
-              }
-            }
-          }
-        }
-        cancer.samples$weight=1
-        return.df = rbind(control.weight.samples,cancer.samples)
-        return.df = return.df[match(subject1$GRP_Id,return.df$GRP_Id),]
-        return(return.df$weight)
-        
-      }
+
+      x = merge(mean.perf.df.targ.tmp.merged,sample.info)
+      x$event=ifelse(x[,'reported'] =='Cancer',1,0)
+      x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
+      library(survcomp)
+      x = x[order(match(x$GRP_Id,mean.perf.df.targ.tmp.merged$GRP_Id )),]
+      male.weights= weightsf.females(x)
+      mean.perf.df.targ.tmp.merged = x[,c(colnames(mean.perf.df.targ.tmp.merged))]
       
-      mean.perf.df.targ.tmp.merged$weighting = female.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
+      mean.perf.df.targ.tmp.merged$weighting = male.weights
+      
       
       
       #normalized weighting
@@ -1054,66 +910,62 @@ cutpoint.use=T
   
   
   auc.plot.all = tpr.fpr.calc(pred.df.targ.collapse)
-  if (dx.all == T){
-    auc.plot.all$dx.time = 'All'
-    auc.plot.all$auc = auc_calc(pred.df.targ.collapse,c('Control','Cancer'))
-    auc.plot.all.dx12 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,])
-    auc.plot.all.dx12$dx.time = '0-2'
-    auc.plot.all.dx12$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,],c('Control','Cancer'))
-    
-    print('dx tmie 2 years')
-    auc.plot.all.dx34 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,])
-    auc.plot.all.dx34$dx.time = '2-4'
-    auc.plot.all.dx34$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,],c('Control','Cancer'))
-    
-    
-    auc.plot.all.dx45 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,])
-    auc.plot.all.dx45$dx.time = '4-6'
-    auc.plot.all.dx45$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,],c('Control','Cancer'))
-    
-    auc.plot.all.dx56 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx56$GRP_Id,])
-    auc.plot.all.dx56$dx.time = '6-10'
-    auc.plot.all.dx56$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx56$GRP_Id,],c('Control','Cancer'))
-    
-    
-    auc.res1 = rbind(auc.plot.all[1,c('auc','dx.time')],
-                     auc.plot.all.dx12[1,c('auc','dx.time')],
-                     auc.plot.all.dx34[1,c('auc','dx.time')],
-                     auc.plot.all.dx45[1,c('auc','dx.time')],
-                     auc.plot.all.dx56[1,c('auc','dx.time')])
-    colnames(auc.res1) = c('auc','subgroup')
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D','#C8553D')
-    names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-10')
-    combined.auc.plot.all = rbind(auc.plot.all,auc.plot.all.dx12,auc.plot.all.dx34,auc.plot.all.dx45,auc.plot.all.dx56)
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=14,face="bold"),
-            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtim2e.labs.png'),height = 1000,width=1000,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-    
-  } else {
-    auc.res1 = NULL
-  }
+  
+  auc.plot.all$dx.time = 'All'
+  auc.plot.all$auc = auc_calc(pred.df.targ.collapse,c('Control','Cancer'))
+  auc.plot.all.dx12 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,])
+  auc.plot.all.dx12$dx.time = '0-2'
+  auc.plot.all.dx12$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,],c('Control','Cancer'))
+  
+  print('dx tmie 2 years')
+  auc.plot.all.dx34 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,])
+  auc.plot.all.dx34$dx.time = '2-4'
+  auc.plot.all.dx34$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,],c('Control','Cancer'))
+  
+  
+  auc.plot.all.dx45 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,])
+  auc.plot.all.dx45$dx.time = '4-6'
+  auc.plot.all.dx45$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,],c('Control','Cancer'))
+  
+  auc.plot.all.dx56 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx56$GRP_Id,])
+  auc.plot.all.dx56$dx.time = '6-10'
+  auc.plot.all.dx56$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx56$GRP_Id,],c('Control','Cancer'))
+  
+  
+  auc.res1 = rbind(auc.plot.all[1,c('auc','dx.time')],
+                   auc.plot.all.dx12[1,c('auc','dx.time')],
+                   auc.plot.all.dx34[1,c('auc','dx.time')],
+                   auc.plot.all.dx45[1,c('auc','dx.time')],
+                   auc.plot.all.dx56[1,c('auc','dx.time')])
+  colnames(auc.res1) = c('auc','subgroup')
+  diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D','#C8553D')
+  names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-10')
+  combined.auc.plot.all = rbind(auc.plot.all,auc.plot.all.dx12,auc.plot.all.dx34,auc.plot.all.dx45,auc.plot.all.dx56)
+  plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8),
+          axis.title=element_text(size=14,face="bold"),
+          legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+  
+  png(paste0(name,'.filler.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
+  print(plot1)
+  dev.off()
+  
+  plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=14,face="bold"),
+          legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
+  
+  png(paste0(name,'.filler.',c,'.auroc.dxtim2e.labs.png'),height = 1000,width=1000,res = 300)
+  print(plot1)
+  dev.off()
+  
+  
   
   #dx time 1 year
   print('dx tmie 1 years')
@@ -1186,299 +1038,214 @@ cutpoint.use=T
   
   auc.plot.all.dx5[[2]]$var.group = 'Time to Diagnosis'
   
-  if (dx.all == T){
-    dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6'),]
-    dx7 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7','7-8','8-9','9+'),]
-    dx8 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','7-8'),]
-    dx9 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9+'),]
-    
-    auc.plot.all.dx6 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx6[[2]]$dx.time = '5-6'
-    auc.plot.all.dx6[[2]]$var = '5-6'
-    
-    auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
-    
-    auc.plot.all.dx7 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx7$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx7[[2]]$dx.time = '6-7'
-    auc.plot.all.dx7[[2]]$var = '6-7'
-    
-    auc.plot.all.dx7[[2]]$var.group = 'Time to Diagnosis'
-    
-    
-    auc.plot.all.dx8 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx8$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx8[[2]]$dx.time = '7-8'
-    auc.plot.all.dx8[[2]]$var = '7-8'
-    
-    auc.plot.all.dx8[[2]]$var.group = 'Time to Diagnosis'
-    
-    
-    auc.plot.all.dx9 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx9$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx9[[2]]$dx.time = '8-10'
-    auc.plot.all.dx9[[2]]$var = '8-10'
-    
-    auc.plot.all.dx9[[2]]$var.group = 'Time to Diagnosis'
-    
-    #
-    
-    auc.res2 = rbind(auc.plot.all[[2]][1,],
-                     auc.plot.all.dx1[[2]][1,],
-                     auc.plot.all.dx2[[2]][1,],
-                     auc.plot.all.dx3[[2]][1,],
-                     auc.plot.all.dx4[[2]][1,],
-                     auc.plot.all.dx5[[2]][1,],
-                     auc.plot.all.dx6[[2]][1,],
-                     auc.plot.all.dx7[[2]][1,],
-                     auc.plot.all.dx8[[2]][1,],
-                     auc.plot.all.dx9[[2]][1,])
-    auc.res2$title = 'Diagnosis Time'
-    combined.auroc = rbind(combined.auroc,auc.res2)
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.dx1[[3]]$var = '0-1'
-    auc.plot.all.dx2[[3]]$var = '1-2'
-    auc.plot.all.dx3[[3]]$var = '2-3'
-    auc.plot.all.dx4[[3]]$var = '3-4'
-    auc.plot.all.dx5[[3]]$var = '4-5'
-    auc.plot.all.dx6[[3]]$var = '5-6'
-    auc.plot.all.dx7[[3]]$var = '6+'
-    auc.plot.all.dx8[[3]]$var = '7-8'
-    auc.plot.all.dx9[[3]]$var = '8-10'
-    
-    
-    auc.t =rbind( auc.plot.all[[3]],
-                  auc.plot.all.dx1[[3]],
-                  auc.plot.all.dx2[[3]],
-                  auc.plot.all.dx3[[3]],
-                  auc.plot.all.dx4[[3]],
-                  auc.plot.all.dx5[[3]],
-                  auc.plot.all.dx6[[3]],
-                  auc.plot.all.dx7[[3]],
-                  auc.plot.all.dx8[[3]],
-                  auc.plot.all.dx9[[3]]
-    )
-    auc.t$title = 'Diagnosis Time'
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #annotating others
-    
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
-    combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                  auc.plot.all.dx1[[2]],
-                                  auc.plot.all.dx2[[2]],
-                                  auc.plot.all.dx3[[2]],
-                                  auc.plot.all.dx4[[2]],
-                                  auc.plot.all.dx5[[2]],
-                                  auc.plot.all.dx6[[2]],
-                                  auc.plot.all.dx7[[2]],
-                                  auc.plot.all.dx8[[2]],
-                                  auc.plot.all.dx9[[2]])
-    combined.auc.plot.all$title = 'Diagnosis Time'
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-  } else {
-    
-    auc.res2 = rbind(auc.plot.all[[2]][1,],
-                     auc.plot.all.dx1[[2]][1,],
-                     auc.plot.all.dx2[[2]][1,],
-                     auc.plot.all.dx3[[2]][1,],
-                     auc.plot.all.dx4[[2]][1,],
-                     auc.plot.all.dx5[[2]][1,])
-    auc.res2$title = 'Diagnosis Time'
-    combined.auroc = rbind(combined.auroc,auc.res2)
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.dx1[[3]]$var = '0-1'
-    auc.plot.all.dx2[[3]]$var = '1-2'
-    auc.plot.all.dx3[[3]]$var = '2-3'
-    auc.plot.all.dx4[[3]]$var = '3-4'
-    auc.plot.all.dx5[[3]]$var = '4-5'
-    
-    auc.t =rbind( auc.plot.all[[3]],
-                  auc.plot.all.dx1[[3]],
-                  auc.plot.all.dx2[[3]],
-                  auc.plot.all.dx3[[3]],
-                  auc.plot.all.dx4[[3]],
-                  auc.plot.all.dx5[[3]]
-    )
-    auc.t$title = 'Diagnosis Time'
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #annotating others
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
-    combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                  auc.plot.all.dx1[[2]],
-                                  auc.plot.all.dx2[[2]],
-                                  auc.plot.all.dx3[[2]],
-                                  auc.plot.all.dx4[[2]],
-                                  auc.plot.all.dx5[[2]])
-    combined.auc.plot.all$title = 'Diagnosis Time'
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      # facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-  }
+  dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6'),]
+  dx7 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7','7-8','8-9','9+'),]
+  dx8 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','7-8'),]
+  dx9 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9+'),]
   
-  if (dx.all == T){
-    
-    dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6','6-7','7-8','8-9','9+'),]
-    
-    
-    auc.plot.all.dx6 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
-    auc.plot.all.dx6[[2]]$dx.time = '5+'
-    auc.plot.all.dx6[[2]]$var = '5+'
-    
-    auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
-    
-    
-    auc.res2 = rbind(auc.plot.all[[2]][1,],
-                     auc.plot.all.dx1[[2]][1,],
-                     auc.plot.all.dx2[[2]][1,],
-                     auc.plot.all.dx3[[2]][1,],
-                     auc.plot.all.dx4[[2]][1,],
-                     auc.plot.all.dx5[[2]][1,],
-                     auc.plot.all.dx6[[2]][1,])
-    auc.res2$title = 'Diagnosis Time'
-    combined.auroc = rbind(combined.auroc,auc.res2)
-    
-    #annotating auc t
-    auc.plot.all[[3]]$var = 'All'
-    auc.plot.all.dx1[[3]]$var = '0-1'
-    auc.plot.all.dx2[[3]]$var = '1-2'
-    auc.plot.all.dx3[[3]]$var = '2-3'
-    auc.plot.all.dx4[[3]]$var = '3-4'
-    auc.plot.all.dx5[[3]]$var = '4-5'
-    auc.plot.all.dx6[[3]]$var = '5+'
-    
-    
-    
-    auc.t =rbind( auc.plot.all[[3]],
-                  auc.plot.all.dx1[[3]],
-                  auc.plot.all.dx2[[3]],
-                  auc.plot.all.dx3[[3]],
-                  auc.plot.all.dx4[[3]],
-                  auc.plot.all.dx5[[3]],
-                  auc.plot.all.dx6[[3]]
-    )
-    auc.t$title = 'Diagnosis Time'
-    auc.t.combined = rbind(auc.t.combined,auc.t)
-    
-    #annotating others
-    
-    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
-    combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                  auc.plot.all.dx1[[2]],
-                                  auc.plot.all.dx2[[2]],
-                                  auc.plot.all.dx3[[2]],
-                                  auc.plot.all.dx4[[2]],
-                                  auc.plot.all.dx5[[2]],
-                                  auc.plot.all.dx6[[2]])
-    combined.auc.plot.all$title = 'Diagnosis Time'
-    
-    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      #facet_grid2(.~title)+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-    
-    png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-    
-  } 
+  auc.plot.all.dx6 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
+  auc.plot.all.dx6[[2]]$dx.time = '5-6'
+  auc.plot.all.dx6[[2]]$var = '5-6'
+  
+  auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
+  
+  auc.plot.all.dx7 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx7$GRP_Id,],merged.df.all.tmp)
+  auc.plot.all.dx7[[2]]$dx.time = '6-7'
+  auc.plot.all.dx7[[2]]$var = '6-7'
+  
+  auc.plot.all.dx7[[2]]$var.group = 'Time to Diagnosis'
+  
+  
+  auc.plot.all.dx8 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx8$GRP_Id,],merged.df.all.tmp)
+  auc.plot.all.dx8[[2]]$dx.time = '7-8'
+  auc.plot.all.dx8[[2]]$var = '7-8'
+  
+  auc.plot.all.dx8[[2]]$var.group = 'Time to Diagnosis'
+  
+  
+  auc.plot.all.dx9 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx9$GRP_Id,],merged.df.all.tmp)
+  auc.plot.all.dx9[[2]]$dx.time = '8-10'
+  auc.plot.all.dx9[[2]]$var = '8-10'
+  
+  auc.plot.all.dx9[[2]]$var.group = 'Time to Diagnosis'
+  
+  #
+  
+  auc.res2 = rbind(auc.plot.all[[2]][1,],
+                   auc.plot.all.dx1[[2]][1,],
+                   auc.plot.all.dx2[[2]][1,],
+                   auc.plot.all.dx3[[2]][1,],
+                   auc.plot.all.dx4[[2]][1,],
+                   auc.plot.all.dx5[[2]][1,],
+                   auc.plot.all.dx6[[2]][1,],
+                   auc.plot.all.dx7[[2]][1,],
+                   auc.plot.all.dx8[[2]][1,],
+                   auc.plot.all.dx9[[2]][1,])
+  auc.res2$title = 'Diagnosis Time'
+  combined.auroc = rbind(combined.auroc,auc.res2)
+  
+  #annotating auc t
+  auc.plot.all[[3]]$var = 'All'
+  auc.plot.all.dx1[[3]]$var = '0-1'
+  auc.plot.all.dx2[[3]]$var = '1-2'
+  auc.plot.all.dx3[[3]]$var = '2-3'
+  auc.plot.all.dx4[[3]]$var = '3-4'
+  auc.plot.all.dx5[[3]]$var = '4-5'
+  auc.plot.all.dx6[[3]]$var = '5-6'
+  auc.plot.all.dx7[[3]]$var = '6+'
+  auc.plot.all.dx8[[3]]$var = '7-8'
+  auc.plot.all.dx9[[3]]$var = '8-10'
+  
+  
+  auc.t =rbind( auc.plot.all[[3]],
+                auc.plot.all.dx1[[3]],
+                auc.plot.all.dx2[[3]],
+                auc.plot.all.dx3[[3]],
+                auc.plot.all.dx4[[3]],
+                auc.plot.all.dx5[[3]],
+                auc.plot.all.dx6[[3]],
+                auc.plot.all.dx7[[3]],
+                auc.plot.all.dx8[[3]],
+                auc.plot.all.dx9[[3]]
+  )
+  auc.t$title = 'Diagnosis Time'
+  auc.t.combined = rbind(auc.t.combined,auc.t)
+  
+  #annotating others
+  
+  diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
+  names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
+  combined.auc.plot.all = rbind(auc.plot.all[[2]],
+                                auc.plot.all.dx1[[2]],
+                                auc.plot.all.dx2[[2]],
+                                auc.plot.all.dx3[[2]],
+                                auc.plot.all.dx4[[2]],
+                                auc.plot.all.dx5[[2]],
+                                auc.plot.all.dx6[[2]],
+                                auc.plot.all.dx7[[2]],
+                                auc.plot.all.dx8[[2]],
+                                auc.plot.all.dx9[[2]])
+  combined.auc.plot.all$title = 'Diagnosis Time'
+  
+  plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    #facet_grid2(.~title)+
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=8,face="bold"),
+          legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+  
+  png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+  print(plot1)
+  dev.off()
+  
+  
+  dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6','6-7','7-8','8-9','9+'),]
+  
+  
+  auc.plot.all.dx6 = summary.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
+  auc.plot.all.dx6[[2]]$dx.time = '5+'
+  auc.plot.all.dx6[[2]]$var = '5+'
+  
+  auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
+  
+  
+  auc.res2 = rbind(auc.plot.all[[2]][1,],
+                   auc.plot.all.dx1[[2]][1,],
+                   auc.plot.all.dx2[[2]][1,],
+                   auc.plot.all.dx3[[2]][1,],
+                   auc.plot.all.dx4[[2]][1,],
+                   auc.plot.all.dx5[[2]][1,],
+                   auc.plot.all.dx6[[2]][1,])
+  auc.res2$title = 'Diagnosis Time'
+  combined.auroc = rbind(combined.auroc,auc.res2)
+  
+  #annotating auc t
+  auc.plot.all[[3]]$var = 'All'
+  auc.plot.all.dx1[[3]]$var = '0-1'
+  auc.plot.all.dx2[[3]]$var = '1-2'
+  auc.plot.all.dx3[[3]]$var = '2-3'
+  auc.plot.all.dx4[[3]]$var = '3-4'
+  auc.plot.all.dx5[[3]]$var = '4-5'
+  auc.plot.all.dx6[[3]]$var = '5+'
+  
+  
+  
+  auc.t =rbind( auc.plot.all[[3]],
+                auc.plot.all.dx1[[3]],
+                auc.plot.all.dx2[[3]],
+                auc.plot.all.dx3[[3]],
+                auc.plot.all.dx4[[3]],
+                auc.plot.all.dx5[[3]],
+                auc.plot.all.dx6[[3]]
+  )
+  auc.t$title = 'Diagnosis Time'
+  auc.t.combined = rbind(auc.t.combined,auc.t)
+  
+  #annotating others
+  
+  diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
+  names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
+  combined.auc.plot.all = rbind(auc.plot.all[[2]],
+                                auc.plot.all.dx1[[2]],
+                                auc.plot.all.dx2[[2]],
+                                auc.plot.all.dx3[[2]],
+                                auc.plot.all.dx4[[2]],
+                                auc.plot.all.dx5[[2]],
+                                auc.plot.all.dx6[[2]])
+  combined.auc.plot.all$title = 'Diagnosis Time'
+  
+  plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    #facet_grid2(.~title)+
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=8,face="bold"),
+          legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+  
+  png(paste0(name,'.filler.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+  print(plot1)
+  dev.off()
   
   
   
   
   pred.df.targ.collapse.annotated = merge(pred.df.targ.collapse, merged.df.all.tmp[,c('GRP_Id','Diagnosis_Time')],by='GRP_Id')
   
-  if (dx.all == F){
-    my_comparisons = list(c('Control','0-1'),
-                          c('Control','1-2'),
-                          c('Control','2-3'),
-                          c('Control','3-4'),
-                          c('Control','4-5'))
-    options(scipen=2)
-    pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','Control'))
-    print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-    
-    
-    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      scale_y_continuous(limits=c(0,1.45),breaks = seq(0,1,0.25))+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-      stat_compare_means(comparisons = my_comparisons,label.y=c(1,1.1,1.2,1.3,1.4,1.5),size=3)
-    
-    
-    png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-  } else {
-    my_comparisons = list(c('Control','0-1'),
-                          c('Control','1-2'),
-                          c('Control','2-3'),
-                          c('Control','3-4'),
-                          c('Control','4-5'),
-                          c('Control','5-6'),
-                          c('Control','6-7'),
-                          c('Control','7-8'))
-    diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')#,'#F46197','#C3C3E6','#442B48'
-    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')#,'6-7','7-8','8-10')
-    
-    options(scipen=2)
-    pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10','Control'))
-    print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-    
-    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-      theme_bw()+ 
-      scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
-      theme(text = element_text(size=8),
-            axis.text=element_text(size=8, face = "bold"),
-            axis.title=element_text(size=8,face="bold"),
-            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-      stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
-    
-    
-    png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-    print(plot1)
-    dev.off()
-    
-  }
+  
+  my_comparisons = list(c('Control','0-1'),
+                        c('Control','1-2'),
+                        c('Control','2-3'),
+                        c('Control','3-4'),
+                        c('Control','4-5'),
+                        c('Control','5-6'),
+                        c('Control','6-7'),
+                        c('Control','7-8'))
+  diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')#,'#F46197','#C3C3E6','#442B48'
+  names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')#,'6-7','7-8','8-10')
+  
+  options(scipen=2)
+  pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10','Control'))
+  print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
+  
+  plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
+    scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+    theme_bw()+ 
+    scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
+    theme(text = element_text(size=8),
+          axis.text=element_text(size=8, face = "bold"),
+          axis.title=element_text(size=8,face="bold"),
+          legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
+    stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
+  
+  
+  png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
+  print(plot1)
+  dev.off()
+  
+  
   
   
   ####plotting stage####
@@ -1752,7 +1519,9 @@ cutpoint.use=T
   #copy
   
   #####morphology#####
-  {
+  morphology = T
+  
+  if (morphology == T) {
     print('morphology')
     brca.morphology = c('85003' = 'Infiltrating ductal carcinoma',
                         '85203' = 'Lobular NOS',
@@ -2638,20 +2407,7 @@ cutpoint.use=T
   
   #last mmg
   print('mmg ever')
-  
-  last.mmg = read.csv('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/ohs.sample.qx/combined.baseline.additional.var.csv',header=T,stringsAsFactors = F)
-  last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '-7','Never Had','Unknown')
-  last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '1','< 6 months',last.mmg$mammogram)
-  last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '2','0.5-1 year',last.mmg$mammogram)
-  last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '3','1-2 years',last.mmg$mammogram)
-  last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '4','2-3 years',last.mmg$mammogram)
-  last.mmg$mammogram = ifelse(last.mmg$HS_MMG_LAST == '5','3+ years',last.mmg$mammogram)
-  
-  
-  library(ggh4x)
-  
-  
-  merged.df.all.tmp = merge(merged.df.all.tmp,last.mmg[,c('ResearchId','mammogram')],all.x=T)
+
   age0 = merged.df.all.tmp[merged.df.all.tmp$mammogram %in% ('Never Had') | merged.df.all.tmp$group =='Control',]
   age1 = merged.df.all.tmp[merged.df.all.tmp$mammogram %in% ('< 6 months') | merged.df.all.tmp$group =='Control',]
   age2 = merged.df.all.tmp[merged.df.all.tmp$mammogram %in% c('0.5-1 year')| merged.df.all.tmp$group =='Control',]
@@ -3255,8 +3011,8 @@ cutpoint.use=T
   median.g = pca.coords$median.g
   a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
   b = survfit(a,newdata=data.frame(365*seq(1:5)))
-  test =T
-  if (test == T){      
+  survival.plot =T
+  if (survival.plot == T){      
     score.cutoff.val = score.cutoff
     pca.coords$median.g = factor(ifelse(pca.coords$methylation_score > score.cutoff.val,'Higher Test Median','Lower Test Median'),levels=c('Lower Test Median','Higher Test Median'))
     
@@ -3265,11 +3021,9 @@ cutpoint.use=T
     cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$logtest[3]
     hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights))$coefficients[2],digits=3)
     median.g = pca.coords$median.g
-    if (dx.all == T) {
-      max.time = 10
-    } else {
-      max.time=5
-    }
+    
+    max.time = 10
+    
     a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords,weights=female.weights)
     b = survfit(a,newdata=data.frame(365*seq(1:max.time)))
     plot4 = ggsurvplot(
@@ -3943,6 +3697,76 @@ cutpoint.use=T
   
   
 }
+
+
+###computing hazard ratios####
+combined.info.all = readRDS('female.epican.weighting.info.RDS') #upload
+mean.perf.df.targ.tmp = pred.df.targ
+y.index = score.cutoff
+mean.perf.df.targ.tmp.merged = merge(mean.perf.df.targ.tmp, all.sample.info[,c('GRP_Id','censorship_time')],by='GRP_Id')
+mean.perf.df.targ.tmp.merged$Event=ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1)
+mean.perf.df.targ.tmp.merged$group = mean.perf.df.targ.tmp.merged$reported
+mean.perf.df.targ.tmp.merged = mean.perf.df.targ.tmp.merged[!is.na(mean.perf.df.targ.tmp.merged$methylation_score),]
+mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score > y.index,'High Predicted Risk','Low Predicted Risk')
+mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
+mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
+
+female.ohs.qx.weighting = function(subject,combined.info.all) {
+  combined.info.all.female = combined.info.all[combined.info.all$Sex == 'Female',]
+  combined.info.all.female$Smoking.Frequency = as.character(combined.info.all.female$Smoking.Frequency)
+  combined.info.all.female[is.na(combined.info.all.female$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
+  age.groups =  unique(combined.info.all.female$age_group)
+  fh.groups = unique(combined.info.all.female$Family.history.prostate)
+  alc.groups = unique(combined.info.all.female$Alch.con.group)
+  smk.groups = unique(combined.info.all.female$Smoking.Frequency)
+  
+  control.samples = combined.info.all[combined.info.all$GRP_Id %in% control.samples$GRP_Id,]
+  cancer.samples = combined.info.all[combined.info.all$GRP_Id %in% cancer.samples$GRP_Id,]
+  
+  ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
+  control.weight.samples = NULL
+  
+  for (age in age.groups ) {
+    for (fh in fh.groups ){
+      for (alc in alc.groups) {
+        targ.control.cohort = control.samples[control.samples$age_group == age &
+                                                control.samples$Family.history.prostate == fh &
+                                                control.samples$Alch.con.group == alc,]
+        if (nrow(targ.control.cohort)>0){
+          cohort.freq =  ohs.pop.samples[ohs.pop.samples$age_group == age &
+                                           ohs.pop.samples$Family.history.prostate == fh &
+                                           ohs.pop.samples$Alch.con.group == alc  ,]
+          
+          targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
+          
+          control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
+        }
+        
+        
+      }
+      
+    }
+  }
+  cancer.samples$weight=1
+  return.df = rbind(control.weight.samples,cancer.samples)
+  return.df = return.df[order(match(return.df$GRP_Id,subject$GRP_Id)),]
+  return(return.df$weight)
+  
+}
+mean.perf.df.targ.tmp.merged = unique(mean.perf.df.targ.tmp.merged)
+weighting=female.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
+km_trt_fit.female.medip <- coxph(Surv(censorship_time/365, Event) ~ Risk.group , data=mean.perf.df.targ.tmp.merged,weights = weighting)
+
+tmp2 = summary(km_trt_fit.female.medip)
+methscore.hr.df = data.frame(Var = rep('cfDNA Methylation Risk Score',2),
+                             Var.group = c('Low Predicted Risk','High Predicted Risk'),
+                             HR = c(1,tmp2$coefficients[2]),
+                             HRL =c(1,tmp2$conf.int[3]),
+                             HRU =c(1,tmp2$conf.int[4]) ,
+                             SE=c(0,tmp2$coefficients[3]),
+                             pvalue = c(1,tmp2$coefficients[6]))
+
+
 
 
 
