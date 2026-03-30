@@ -1,13 +1,3 @@
-#!/bin/bash
-#1 100-fold repeated CV model predictions + running
-for i in {1..10}; #10 folds
-do for l in {1..100}; #100 repeats
-do sed  s/foldno/${i}/g prostate.cancer.discovery.cv.model.R  | sed  s/seedno/${l}/g   > prostate.cancer.discovery.cv.${i}.${l}.R;
-RScript ./prostate.cancer.discovery.cv.${i}.${l}.R;
-done; done
-
-#2 100-fold CV performance discovery
-./prostate.cancer.discovery.cv.performance.R
-
-#3 test set model + performance
-./prostate.cancer.testset.R
+version https://git-lfs.github.com/spec/v1
+oid sha256:0f5c22f38893f4322f55a550aadca800c8b6d6f21fcd534833e8398c0c1b2b36
+size 478
