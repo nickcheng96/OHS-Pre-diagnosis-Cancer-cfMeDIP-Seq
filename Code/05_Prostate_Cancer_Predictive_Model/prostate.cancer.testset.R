@@ -168,22 +168,14 @@ weightsf.males<-function (matched_samples){
   return(weights)
 }
 
-autosome_filt = function(medips.count_df) {
-  tmp =gsub(':.*','',medips.count_df)
-  return_df = medips.count_df[!tmp %in% c('chrY','chrX','chrM')]
-  return(return_df)
-}
-
-
-
 predictive.models.glm = function(targ.matrix1,
                                  merged.df,
                                  train.set,
                                  test.set,
                                  targ.features,
                                  feats,
-                                 feature.type,
-                                 stat.test,no_cores=5, standardize = F) {
+                                 no_cores=5, 
+                                 standardize = F) {
   library(caret)
   library(glmnet)
   library(ROCR)
@@ -394,14 +386,11 @@ predictive.models.glm = function(targ.matrix1,
     
     
     #annotating scores
-    results.df$feature = feature.type
-    results.df$test = stat.test
+
     results.df$n.features = fl
     results.df.all = rbind(results.df.all,results.df)
     
-    
-    feature.weights$feature = feature.type
-    feature.weights$test = stat.test
+
     feature.weights$n.features = fl
     feature.weights.all = rbind(feature.weights.all,feature.weights)
     end = Sys.time()
@@ -424,7 +413,7 @@ test.set = all.sample.info[all.sample.info$Sex == 'Male' & all.sample.info$data.
 
 ####deseq dmrcalling among silencer regions using all discovery set#####
 merged.df.filt.targ = discovery.set[discovery.set$Sex == 'Male',]
-dds = readRDS('ohs.silencer.dds.RDS')
+dds = readRDS('ohs.1000.silencer.dds.RDS')
 windows = rownames(dds)
 windows = windows[!grepl('chrX|chrY',windows)]
 
@@ -452,16 +441,12 @@ res.df = results(ddssva,contrast = list('groupCancer')) #generating results tabl
 saveRDS(res.df,paste0('ohs.prostate.discovery.DMRs.RDS'))
 
 
-####setting tuning choices ####
-
-
-
 #####silencer only ml####
 results.df.all = NULL
-feature = 'dmr'
 
 res.df$window =rownames(res.df)
 directions = c('abs')
+dds = readRDS('ohs.1000.silencer.dds.RDS')
 sample.matrix = counts(dds, normalized = T)
 fc.cutoff=0.25
 results.df.all = NULL
@@ -540,9 +525,7 @@ for (fc in fc.cutoff) {
                                          train.set,
                                          test.set,
                                          targ.features =targ.features1,
-                                         feats = fl,
-                                         feature.type = 'silencer',
-                                         stat.test ='silencer')
+                                         feats = fl)
       perf.df = res.df.all[[1]] 
       return(perf.df)
     },mc.cores=5)
@@ -553,7 +536,6 @@ for (fc in fc.cutoff) {
     combined.collapse =ddply(results.df.tmp[,c('GRP_Id','reported','methylation_score','model')], c('GRP_Id','reported','model'),numcolwise(mean,na.rm=T))
     combined.collapse = combined.collapse[combined.collapse$model == 'logreg.old.alpha1',]
     combined.collapse$auroc = auc_calc(combined.collapse)
-    combined.collapse$predictions = ifelse(combined.collapse$methylation_score >= score.cutoff,'Cancer','Control')
     results.df.all = rbind(results.df.all,combined.collapse)
     
     
@@ -574,10 +556,7 @@ pred.df.targ = results.df.all;
 name = paste0(figdir,'results.df.all');
 merged.df.all= validation.set;
 score.cutoff=0.151;
-dx.all = T;
-cutpoint.use =T;
-gs.plot= T
-combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
+cutpoint.use =T #if using the score.cutoff value for the cutoff
 
 #initally embedded as a function, but survminer has trouble reading in some data, so try to just run with the chunk of code in braces below
 {
@@ -704,55 +683,18 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
       mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score > cp.youden,'High Predicted Risk','Low Predicted Risk')
       mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
       mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
-      subject1 = mean.perf.df.targ.tmp.merged
+
       
-      male.ohs.qx.weighting = function(subject1,combined.info.all) {
-        subject = merge(subject1, all.sample.info[,c('GRP_Id','Smoking.Frequency','age_group','Family.history.prostate','Alch.con.group')],by='GRP_Id')
-        combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
-        combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-        combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        age.groups =  unique(combined.info.all.male$age_group)
-        fh.groups = unique(combined.info.all.male$Family.history.prostate)
-        alc.groups = unique(combined.info.all.male$Alch.con.group)
-        smk.groups = unique(combined.info.all.male$Smoking.Frequency)
-        control.samples = subject[subject$reported == 'Control',]
-        cancer.samples = subject[subject$reported != 'Control',]
-        
-        ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
-        control.weight.samples = NULL
-        for (age in age.groups ) {
-          for (fh in fh.groups ){
-            for (alc in alc.groups) {
-              for (smk in smk.groups ){
-                group.combination = paste(age,fh,alc,smk,sep='.')
-                targ.control.cohort = control.samples[control.samples$age_group == age &
-                                                        control.samples$Family.history.prostate == fh &
-                                                        control.samples$Alch.con.group == alc &
-                                                        control.samples$Smoking.Frequency == smk ,]
-                if (nrow(targ.control.cohort)>0){
-                  cohort.freq =  ohs.pop.samples[ohs.pop.samples$age_group == age &
-                                                   ohs.pop.samples$Family.history.prostate == fh &
-                                                   ohs.pop.samples$Alch.con.group == alc &
-                                                   ohs.pop.samples$Smoking.Frequency == smk ,]
-                  
-                  targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
-                  
-                  control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
-                }
-                
-                
-              }
-            }
-          }
-        }
-        cancer.samples$weight=1
-        return.df = rbind(control.weight.samples,cancer.samples)
-        return.df = return.df[match(subject1$GRP_Id,return.df$GRP_Id),]
-        return(return.df$weight)
-        
-      }
       
-      mean.perf.df.targ.tmp.merged$weighting = male.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
+      x = merge(mean.perf.df.targ.tmp.merged,sample.info)
+      x$event=ifelse(x[,'reported'] =='Cancer',1,0)
+      x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
+      x = x[order(match(x$GRP_Id,mean.perf.df.targ.tmp.merged$GRP_Id )),]
+      male.weights= weightsf.males(x)
+      mean.perf.df.targ.tmp.merged = x[,c(colnames(mean.perf.df.targ.tmp.merged))]
+      mean.perf.df.targ.tmp.merged$weighting = male.weights
+      
+      
       
       #normalized weighting
       weighted.df = NULL
@@ -987,54 +929,16 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
       mean.perf.df.targ.tmp.merged$Risk.group = ifelse(mean.perf.df.targ.tmp.merged$methylation_score >= cp.youden,'High Predicted Risk','Low Predicted Risk')
       mean.perf.df.targ.tmp.merged$Risk.group = factor(as.character(mean.perf.df.targ.tmp.merged$Risk.group ),levels = c('Low Predicted Risk','High Predicted Risk'))
       mean.perf.df.targ.tmp.merged$Event= ifelse(mean.perf.df.targ.tmp.merged$reported == 'Control',0,1 )
-      subject1 = unique(mean.perf.df.targ.tmp.merged)
-      male.ohs.qx.weighting = function(subject1,combined.info.all) {
-        subject = merge(subject1, all.sample.info[,c('GRP_Id','Smoking.Frequency','age_group','Family.history.prostate','Alch.con.group')],by='GRP_Id')
-        combined.info.all.male = combined.info.all[combined.info.all$Sex == 'Male',]
-        combined.info.all.male$Smoking.Frequency = as.character(combined.info.all.male$Smoking.Frequency)
-        combined.info.all.male[is.na(combined.info.all.male$Smoking.Frequency),'Smoking.Frequency'] = 'Never'
-        age.groups =  unique(combined.info.all.male$age_group)
-        fh.groups = unique(combined.info.all.male$Family.history.prostate)
-        alc.groups = unique(combined.info.all.male$Alch.con.group)
-        smk.groups = unique(combined.info.all.male$Smoking.Frequency)
-        control.samples = subject[subject$reported == 'Control',]
-        cancer.samples = subject[subject$reported != 'Control',]
-        
-        ohs.pop.samples = combined.info.all[combined.info.all$Cohort == 'EpiCan', ]
-        control.weight.samples = NULL
-        for (age in age.groups ) {
-          for (fh in fh.groups ){
-            for (alc in alc.groups) {
-              for (smk in smk.groups ){
-                group.combination = paste(age,fh,alc,smk,sep='.')
-                targ.control.cohort = control.samples[control.samples$age_group == age &
-                                                        control.samples$Family.history.prostate == fh &
-                                                        control.samples$Alch.con.group == alc &
-                                                        control.samples$Smoking.Frequency == smk ,]
-                if (nrow(targ.control.cohort)>0){
-                  cohort.freq =  ohs.pop.samples[ohs.pop.samples$age_group == age &
-                                                   ohs.pop.samples$Family.history.prostate == fh &
-                                                   ohs.pop.samples$Alch.con.group == alc &
-                                                   ohs.pop.samples$Smoking.Frequency == smk ,]
-                  
-                  targ.control.cohort$weight= nrow(cohort.freq)/nrow(targ.control.cohort)
-                  
-                  control.weight.samples = rbind(control.weight.samples,targ.control.cohort)
-                }
-                
-                
-              }
-            }
-          }
-        }
-        cancer.samples$weight=1
-        return.df = rbind(control.weight.samples,cancer.samples)
-        return.df = return.df[match(subject1$GRP_Id,return.df$GRP_Id),]
-        return(return.df$weight)
-        
-      }
       
-      mean.perf.df.targ.tmp.merged$weighting = male.ohs.qx.weighting(mean.perf.df.targ.tmp.merged, combined.info.all)
+      
+      x = merge(mean.perf.df.targ.tmp.merged,sample.info)
+      x$event=ifelse(x[,'reported'] =='Cancer',1,0)
+      x$reported.surv = ifelse(x[,'reported'] == 'Cancer',1,0)
+      x = x[order(match(x$GRP_Id,mean.perf.df.targ.tmp.merged$GRP_Id )),]
+      male.weights= weightsf.males(x)
+      mean.perf.df.targ.tmp.merged = x[,c(colnames(mean.perf.df.targ.tmp.merged))]
+      mean.perf.df.targ.tmp.merged$weighting = male.weights
+      
       
       
       #normalized weighting
@@ -1119,12 +1023,7 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
     
     
   }
-  
-  #grade
-  #stage
-  #last psa 
-  #age
-  
+ 
   #overall performance between models
   return.df.final.auroc = NULL
   return.df.final.auct = NULL
@@ -1147,448 +1046,380 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
     pred.df.targ.collapse =pred.df.targ.collapse.all#[pred.df.targ.collapse.all$model == as.character(c),]
     merged.df.all.tmp = merge(pred.df.targ.collapse, merged.df.all,by=c('GRP_Id','ResearchId'))
     
-    if (dx.all == F) {
-      #plotting dx time grouped by 2 years
-      dx12 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','0-1','1-2','0-2'),]
-      dx34 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','2-3','3-4','2-4'),]
-      dx45 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','4-5','5+','4-6'),]
-      
-      auc.plot.all = tpr.fpr.calc(pred.df.targ.collapse)
-      auc.plot.all$dx.time = 'All'
-      auc.plot.all$auc = auc_calc(pred.df.targ.collapse,c('Control','Cancer'))
-      auc.plot.all.dx12 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,])
-      auc.plot.all.dx12$dx.time = '0-2'
-      auc.plot.all.dx12$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,],c('Control','Cancer'))
-      
-      print('dx tmie 2 years')
-      auc.plot.all.dx34 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,])
-      auc.plot.all.dx34$dx.time = '2-4'
-      auc.plot.all.dx34$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,],c('Control','Cancer'))
-      
-      
-      auc.plot.all.dx45 = tpr.fpr.calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,])
-      auc.plot.all.dx45$dx.time = '4+'
-      auc.plot.all.dx45$auc = auc_calc(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,],c('Control','Cancer'))
-      
-      auc.res1 = rbind(auc.plot.all[1,c('auc','dx.time')],
-                       auc.plot.all.dx12[1,c('auc','dx.time')],
-                       auc.plot.all.dx34[1,c('auc','dx.time')],
-                       auc.plot.all.dx45[1,c('auc','dx.time')])
-      colnames(auc.res1) = c('auc','subgroup')
-      diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#AAF683','#FFD97D')
-      names(diagnosis_time_colors1) = c('All','0-2','2-4','4+')
-      combined.auc.plot.all = rbind(auc.plot.all,auc.plot.all.dx12,auc.plot.all.dx34,auc.plot.all.dx45)
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
-      print(plot1)
-      dev.off()
-      
-      labels = combined.auc.plot.all[combined.auc.plot.all$l ==0,]
-      labels$title = gsub('.new','',paste0(labels$dx.time, ' AUROC: ',round(labels$auc,digits=3)))
-      colors.filt = diagnosis_time_colors1[names(diagnosis_time_colors1) %in% labels$dx.time]
-      labels = labels[order(match(labels$dx.time,names(colors.filt) )),]  
-      labels$dx.time = factor(labels$dx.time,levels = names(colors.filt))
-      combined.auc.plot.all$dx.time = factor(as.character(combined.auc.plot.all$dx.time), levels= names(colors.filt))
-      
-      
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1),labels = labels$title)+ #+ ggtitle(title) +
-        theme_bw()+ 
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
-      print(plot1)
-      dev.off()
-      
-    } else {
-      #plotting dx time grouped by 2 years
-      dx12 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','0-1','1-2','0-2'),]
-      dx34 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','2-3','3-4','2-4'),]
-      dx45 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','4-5','5+','5-6','4-6'),]
-      dx67 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7','7-8','6-8'),]
-      dx89 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9-10','8-10'),]
-      print('dx tmie 2 years')
-      
-      auc.plot.all = summary.calc(pred.df.targ.collapse,merged.df.all.tmp)
-      auc.plot.all[[2]]$dx.time = 'All'
-      auc.plot.all[[2]]$var = 'All'
-      auc.plot.all[[2]]$var.group = 'All'
-      
-      auc.plot.all.dx12 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx12[[2]]$dx.time = '0-2'
-      auc.plot.all.dx12[[2]]$var = '0-2'
-      auc.plot.all.dx12[[2]]$var.group = 'DxTime2'
-      
-      auc.plot.all.dx34 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx34[[2]]$dx.time = '2-4'
-      auc.plot.all.dx34[[2]]$var = '2-4'
-      auc.plot.all.dx34[[2]]$var.group = 'DxTime2'
-      
-      auc.plot.all.dx45 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx45[[2]]$dx.time = '4-6'
-      auc.plot.all.dx45[[2]]$var = '4-6'
-      auc.plot.all.dx45[[2]]$var.group = 'DxTime2'
-      
-      auc.plot.all.dx67 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx67$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx67[[2]]$dx.time =  '6-8'
-      auc.plot.all.dx67[[2]]$var = '6-8'
-      auc.plot.all.dx67[[2]]$var.group = 'DxTime2'
-      
-      auc.plot.all.dx89 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx89$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx89[[2]]$dx.time = '8-10'
-      auc.plot.all.dx89[[2]]$var = '8-10'
-      auc.plot.all.dx89[[2]]$var.group = 'DxTime2'
-      
-      
-      diagnosis_time_colors1 = c('grey',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
-      names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-8','8-10')
-      
-      
-      auc.res2 = rbind(auc.plot.all[[2]][1,],
-                       auc.plot.all.dx12[[2]][1,],
-                       auc.plot.all.dx34[[2]][1,],
-                       auc.plot.all.dx45[[2]][1,],
-                       auc.plot.all.dx67[[2]][1,])
-      #  auc.plot.all.dx89[[2]][1,])
-      auc.res2$title = 'DxTime2'
-      combined.auroc = rbind(combined.auroc,auc.res2)
-      
-      combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                    auc.plot.all.dx12[[2]],
-                                    auc.plot.all.dx34[[2]],
-                                    auc.plot.all.dx45[[2]],
-                                    auc.plot.all.dx67[[2]])#,
-      # auc.plot.all.dx89[[2]])
-      
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
-      print(plot1)
-      dev.off()
-      
-      labels = combined.auc.plot.all[combined.auc.plot.all$l ==0,]
-      labels$title = gsub('.new','',paste0(labels$dx.time, ' AUROC: ',round(labels$auc,digits=3)))
-      colors.filt = diagnosis_time_colors1[names(diagnosis_time_colors1) %in% labels$dx.time]
-      labels = labels[order(match(labels$dx.time,names(colors.filt) )),]  
-      labels$dx.time = factor(labels$dx.time,levels = names(colors.filt))
-      combined.auc.plot.all$dx.time = factor(as.character(combined.auc.plot.all$dx.time), levels= names(colors.filt))
-      
-      
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1),labels = labels$title)+ #+ ggtitle(title) +
-        theme_bw()+ 
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-      
-      
-      
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = auc, col = dx.time)) +
-        geom_errorbar(aes(ymin=auc.lower, ymax=auc.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Sampling time prior to diagnosis') + ylab('CV AUROC (95% CI)')
-      
-      png(paste0(name,'.',c,'.auroc.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = ci, col = dx.time)) +
-        geom_errorbar(aes(ymin=ci.lower, ymax=ci.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)') + ylab('CV Concordance Index (95% CI)')
-      
-      png(paste0(name,'.',c,'.ci.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y =se.spec.95 , col = dx.time)) +
-        geom_errorbar(aes(ymin=se.spec.95.lower, ymax=se.spec.95.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)') + ylab('Sensitivity at 95% Specificity (95% CI)')
-      
-      png(paste0(name,'.',c,'.sens.spec95.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = se.spec.90, col = dx.time)) +
-        geom_errorbar(aes(ymin=se.spec.90.lower, ymax=se.spec.90.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('Sensitivity at 90% Specificity (95% CI)')
-      
-      png(paste0(name,'.',c,'.sens.spec90.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-      #youdens index sens
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.sens, col = dx.time)) +
-        geom_errorbar(aes(ymin=jcutpoint.sens.lower, ymax=jcutpoint.sens.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Sensitivity')
-      
-      png(paste0(name,'.',c,'.sens.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      #youdens index spec
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.spec, col = dx.time)) +
-        geom_errorbar(aes(ymin=jcutpoint.spec.lower, ymax=jcutpoint.spec.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Specificity')
-      
-      png(paste0(name,'.',c,'.spec.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-      #youdens index ppv
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.ppv, col = dx.time)) +
-        geom_errorbar(aes(ymin=jcutpoint.ppv.lower, ymax=jcutpoint.ppv.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff PPV')
-      
-      png(paste0(name,'.',c,'.ppv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      #youdens index npv
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.npv, col = dx.time)) +
-        geom_errorbar(aes(ymin=jcutpoint.npv.lower, ymax=jcutpoint.npv.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff NPV')
-      
-      png(paste0(name,'.',c,'.npv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-      #f1 sens
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.sens, col = dx.time)) +
-        geom_errorbar(aes(ymin=f1cutpoint.sens.lower, ymax=f1cutpoint.sens.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff Sensitivity')
-      
-      png(paste0(name,'.',c,'.sens.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      #f1 index spec
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.spec, col = dx.time)) +
-        geom_errorbar(aes(ymin=f1cutpoint.spec.lower, ymax=f1cutpoint.spec.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosi (Years)s')+ ylab('F1-Score Maximized Cutoff Specificity')
-      
-      png(paste0(name,'.',c,'.spec.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-      #youdens index ppv
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.ppv, col = dx.time)) +
-        geom_errorbar(aes(ymin=f1cutpoint.ppv.lower, ymax=f1cutpoint.ppv.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff PPV')
-      
-      png(paste0(name,'.',c,'.ppv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      #f1 index npv
-      plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.npv, col = dx.time)) +
-        geom_errorbar(aes(ymin=f1cutpoint.npv.lower, ymax=f1cutpoint.npv.upper), width=.2,
-                      position=position_dodge(0.05))+
-        geom_point()+
-        scale_y_continuous(limits=c(0,1))+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ 
-        guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
-        xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff NPV')
-      
-      png(paste0(name,'.',c,'.npv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      my_comparisons = list(c('Control','0-2'),
-                            c('Control','2-4'),
-                            c('Control','4-6'),
-                            c('Control','6-8'),
-                            c('Control','8-10'))
-      diagnosis_time_colors1 = c('grey',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
-      names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-8','8-10')
-      
-      options(scipen=2)
-      
-      diagnosis_time_grouping = function(diagnosis_time) {
-        tmp = ifelse(diagnosis_time > 2920, '8-10', diagnosis_time)
-        tmp = ifelse(diagnosis_time <= 2920, '6-8', tmp)
-        tmp = ifelse(diagnosis_time <= 2190, '4-6', tmp)
-        tmp = ifelse(diagnosis_time <= 1460, '2-4', tmp)
-        tmp = ifelse(diagnosis_time <= 730, '0-2', tmp)
-        tmp[is.na(diagnosis_time)] = 'Control'
-        diagnosis_time_groups = c('0-2','2-4','4-6','6-8','8-10','Control')
-        tmp = factor(tmp, levels = rev(diagnosis_time_groups))
-        return(tmp)
-      }
-      pred.df.targ.collapse.annotated = merge(pred.df.targ.collapse, merged.df.all.tmp[,c('GRP_Id','diff_in_days')],by='GRP_Id')
-      
-      pred.df.targ.collapse.annotated$Diagnosis.time.ks = diagnosis_time_grouping(pred.df.targ.collapse.annotated$diff_in_days)
-      print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-      
-      plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis.time.ks, y = methylation_score, col = Diagnosis.time.ks)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-        stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
-      
-      
-      png(paste0(name,'.dx2.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-      
+    #plotting dx time grouped by 2 years
+    dx12 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','0-1','1-2','0-2'),]
+    dx34 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','2-3','3-4','2-4'),]
+    dx45 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','4-5','5+','5-6','4-6'),]
+    dx67 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7','7-8','6-8'),]
+    dx89 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9-10','8-10'),]
+    print('dx tmie 2 years')
+    
+    auc.plot.all = summary.calc(pred.df.targ.collapse,merged.df.all.tmp)
+    auc.plot.all[[2]]$dx.time = 'All'
+    auc.plot.all[[2]]$var = 'All'
+    auc.plot.all[[2]]$var.group = 'All'
+    
+    auc.plot.all.dx12 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx12$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx12[[2]]$dx.time = '0-2'
+    auc.plot.all.dx12[[2]]$var = '0-2'
+    auc.plot.all.dx12[[2]]$var.group = 'DxTime2'
+    
+    auc.plot.all.dx34 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx34$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx34[[2]]$dx.time = '2-4'
+    auc.plot.all.dx34[[2]]$var = '2-4'
+    auc.plot.all.dx34[[2]]$var.group = 'DxTime2'
+    
+    auc.plot.all.dx45 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx45$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx45[[2]]$dx.time = '4-6'
+    auc.plot.all.dx45[[2]]$var = '4-6'
+    auc.plot.all.dx45[[2]]$var.group = 'DxTime2'
+    
+    auc.plot.all.dx67 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx67$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx67[[2]]$dx.time =  '6-8'
+    auc.plot.all.dx67[[2]]$var = '6-8'
+    auc.plot.all.dx67[[2]]$var.group = 'DxTime2'
+    
+    auc.plot.all.dx89 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx89$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx89[[2]]$dx.time = '8-10'
+    auc.plot.all.dx89[[2]]$var = '8-10'
+    auc.plot.all.dx89[[2]]$var.group = 'DxTime2'
+    
+    
+    diagnosis_time_colors1 = c('grey',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
+    names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-8','8-10')
+    
+    
+    auc.res2 = rbind(auc.plot.all[[2]][1,],
+                     auc.plot.all.dx12[[2]][1,],
+                     auc.plot.all.dx34[[2]][1,],
+                     auc.plot.all.dx45[[2]][1,],
+                     auc.plot.all.dx67[[2]][1,])
+    #  auc.plot.all.dx89[[2]][1,])
+    auc.res2$title = 'DxTime2'
+    combined.auroc = rbind(combined.auroc,auc.res2)
+    
+    combined.auc.plot.all = rbind(auc.plot.all[[2]],
+                                  auc.plot.all.dx12[[2]],
+                                  auc.plot.all.dx34[[2]],
+                                  auc.plot.all.dx45[[2]],
+                                  auc.plot.all.dx67[[2]])#,
+    # auc.plot.all.dx89[[2]])
+    
+    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+    
+    png(paste0(name,'.',c,'.auroc.dxtime2.png'),height = 1000,width=1000,res = 300)
+    print(plot1)
+    dev.off()
+    
+    labels = combined.auc.plot.all[combined.auc.plot.all$l ==0,]
+    labels$title = gsub('.new','',paste0(labels$dx.time, ' AUROC: ',round(labels$auc,digits=3)))
+    colors.filt = diagnosis_time_colors1[names(diagnosis_time_colors1) %in% labels$dx.time]
+    labels = labels[order(match(labels$dx.time,names(colors.filt) )),]  
+    labels$dx.time = factor(labels$dx.time,levels = names(colors.filt))
+    combined.auc.plot.all$dx.time = factor(as.character(combined.auc.plot.all$dx.time), levels= names(colors.filt))
+    
+    
+    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = var)) + geom_line(linewidth=1) +
+      scale_color_manual(values = c(diagnosis_time_colors1),labels = labels$title)+ #+ ggtitle(title) +
+      theme_bw()+ 
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "right")+ guides(colour = guide_legend(override.aes = list(size=4),ncol=1)) + xlab('False Positive Rate') + ylab('Sensitivity')
+    
+    png(paste0(name,'.',c,'.auroc.dxtim2e.labs.png'),height = 500,width=1000,res = 300)
+    print(plot1)
+    dev.off()
+    
+    
+    
+    
+    
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = auc, col = dx.time)) +
+      geom_errorbar(aes(ymin=auc.lower, ymax=auc.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Sampling time prior to diagnosis') + ylab('CV AUROC (95% CI)')
+    
+    png(paste0(name,'.',c,'.auroc.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = ci, col = dx.time)) +
+      geom_errorbar(aes(ymin=ci.lower, ymax=ci.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)') + ylab('CV Concordance Index (95% CI)')
+    
+    png(paste0(name,'.',c,'.ci.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y =se.spec.95 , col = dx.time)) +
+      geom_errorbar(aes(ymin=se.spec.95.lower, ymax=se.spec.95.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)') + ylab('Sensitivity at 95% Specificity (95% CI)')
+    
+    png(paste0(name,'.',c,'.sens.spec95.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = se.spec.90, col = dx.time)) +
+      geom_errorbar(aes(ymin=se.spec.90.lower, ymax=se.spec.90.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('Sensitivity at 90% Specificity (95% CI)')
+    
+    png(paste0(name,'.',c,'.sens.spec90.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    
+    #youdens index sens
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.sens, col = dx.time)) +
+      geom_errorbar(aes(ymin=jcutpoint.sens.lower, ymax=jcutpoint.sens.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Sensitivity')
+    
+    png(paste0(name,'.',c,'.sens.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    #youdens index spec
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.spec, col = dx.time)) +
+      geom_errorbar(aes(ymin=jcutpoint.spec.lower, ymax=jcutpoint.spec.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff Specificity')
+    
+    png(paste0(name,'.',c,'.spec.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    
+    #youdens index ppv
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.ppv, col = dx.time)) +
+      geom_errorbar(aes(ymin=jcutpoint.ppv.lower, ymax=jcutpoint.ppv.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff PPV')
+    
+    png(paste0(name,'.',c,'.ppv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    #youdens index npv
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = jcutpoint.npv, col = dx.time)) +
+      geom_errorbar(aes(ymin=jcutpoint.npv.lower, ymax=jcutpoint.npv.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('Youden\'s Index Cutoff NPV')
+    
+    png(paste0(name,'.',c,'.npv.youden.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    
+    #f1 sens
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.sens, col = dx.time)) +
+      geom_errorbar(aes(ymin=f1cutpoint.sens.lower, ymax=f1cutpoint.sens.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff Sensitivity')
+    
+    png(paste0(name,'.',c,'.sens.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    #f1 index spec
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.spec, col = dx.time)) +
+      geom_errorbar(aes(ymin=f1cutpoint.spec.lower, ymax=f1cutpoint.spec.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosi (Years)s')+ ylab('F1-Score Maximized Cutoff Specificity')
+    
+    png(paste0(name,'.',c,'.spec.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    
+    #youdens index ppv
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.ppv, col = dx.time)) +
+      geom_errorbar(aes(ymin=f1cutpoint.ppv.lower, ymax=f1cutpoint.ppv.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff PPV')
+    
+    png(paste0(name,'.',c,'.ppv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    #f1 index npv
+    plot1 = ggplot(auc.res2,aes(x = dx.time, y = f1cutpoint.npv, col = dx.time)) +
+      geom_errorbar(aes(ymin=f1cutpoint.npv.lower, ymax=f1cutpoint.npv.upper), width=.2,
+                    position=position_dodge(0.05))+
+      geom_point()+
+      scale_y_continuous(limits=c(0,1))+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ 
+      guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) +
+      xlab('Time to Diagnosis (Years)')+ ylab('F1-Score Maximized Cutoff NPV')
+    
+    png(paste0(name,'.',c,'.npv.f1.ci.dxtime2.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    my_comparisons = list(c('Control','0-2'),
+                          c('Control','2-4'),
+                          c('Control','4-6'),
+                          c('Control','6-8'),
+                          c('Control','8-10'))
+    diagnosis_time_colors1 = c('grey',"#048BA8",'#AAF683','#FFD97D','#FF9B85','#C8553D')
+    names(diagnosis_time_colors1) = c('All','0-2','2-4','4-6','6-8','8-10')
+    
+    options(scipen=2)
+    
+    diagnosis_time_grouping = function(diagnosis_time) {
+      tmp = ifelse(diagnosis_time > 2920, '8-10', diagnosis_time)
+      tmp = ifelse(diagnosis_time <= 2920, '6-8', tmp)
+      tmp = ifelse(diagnosis_time <= 2190, '4-6', tmp)
+      tmp = ifelse(diagnosis_time <= 1460, '2-4', tmp)
+      tmp = ifelse(diagnosis_time <= 730, '0-2', tmp)
+      tmp[is.na(diagnosis_time)] = 'Control'
+      diagnosis_time_groups = c('0-2','2-4','4-6','6-8','8-10','Control')
+      tmp = factor(tmp, levels = rev(diagnosis_time_groups))
+      return(tmp)
     }
+    pred.df.targ.collapse.annotated = merge(pred.df.targ.collapse, merged.df.all.tmp[,c('GRP_Id','diff_in_days')],by='GRP_Id')
+    
+    pred.df.targ.collapse.annotated$Diagnosis.time.ks = diagnosis_time_grouping(pred.df.targ.collapse.annotated$diff_in_days)
+    print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
+    
+    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis.time.ks, y = methylation_score, col = Diagnosis.time.ks)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
+      stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
+    
+    
+    png(paste0(name,'.dx2.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
     
     
     print('dx tmie 1 years')
@@ -1658,169 +1489,125 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
     
     auc.plot.all.dx5[[2]]$var.group = 'Time to Diagnosis'
     
-    if (dx.all == T){
-      dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6'),]
-      dx7 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7'),]
-      dx8 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','7-8'),]
-      dx9 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9+'),]
-      
-      auc.plot.all.dx6 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx6[[2]]$dx.time = '5-6'
-      auc.plot.all.dx6[[2]]$var = '5-6'
-      
-      auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
-      
-      auc.plot.all.dx7 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx7$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx7[[2]]$dx.time = '6-7'
-      auc.plot.all.dx7[[2]]$var = '6-7'
-      
-      auc.plot.all.dx7[[2]]$var.group = 'Time to Diagnosis'
-      
-      
-      auc.plot.all.dx8 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx8$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx8[[2]]$dx.time = '7-8'
-      auc.plot.all.dx8[[2]]$var = '7-8'
-      
-      auc.plot.all.dx8[[2]]$var.group = 'Time to Diagnosis'
-      
-      
-      auc.plot.all.dx9 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx9$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx9[[2]]$dx.time = '8-10'
-      auc.plot.all.dx9[[2]]$var = '8-10'
-      
-      auc.plot.all.dx9[[2]]$var.group = 'Time to Diagnosis'
-      
-      #
-      
-      auc.res2 = rbind(auc.plot.all[[2]][1,],
-                       auc.plot.all.dx1[[2]][1,],
-                       auc.plot.all.dx2[[2]][1,],
-                       auc.plot.all.dx3[[2]][1,],
-                       auc.plot.all.dx4[[2]][1,],
-                       auc.plot.all.dx5[[2]][1,],
-                       auc.plot.all.dx6[[2]][1,],
-                       auc.plot.all.dx7[[2]][1,],
-                       auc.plot.all.dx8[[2]][1,],
-                       auc.plot.all.dx9[[2]][1,])
-      auc.res2$title = 'Diagnosis Time'
-      combined.auroc = rbind(combined.auroc,auc.res2)
-      
-      diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
-      names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
-      combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                    auc.plot.all.dx1[[2]],
-                                    auc.plot.all.dx2[[2]],
-                                    auc.plot.all.dx3[[2]],
-                                    auc.plot.all.dx4[[2]],
-                                    auc.plot.all.dx5[[2]],
-                                    auc.plot.all.dx6[[2]],
-                                    auc.plot.all.dx7[[2]],
-                                    auc.plot.all.dx8[[2]],
-                                    auc.plot.all.dx9[[2]])
-      combined.auc.plot.all$title = 'Diagnosis Time'
-      
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid2(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-    } else {
-      
-      auc.res2 = rbind(auc.plot.all[[2]][1,],
-                       auc.plot.all.dx1[[2]][1,],
-                       auc.plot.all.dx2[[2]][1,],
-                       auc.plot.all.dx3[[2]][1,],
-                       auc.plot.all.dx4[[2]][1,],
-                       auc.plot.all.dx5[[2]][1,])
-      auc.res2$title = 'Diagnosis Time'
-      combined.auroc = rbind(combined.auroc,auc.res2)
-      
-      
-      #annotating others
-      diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
-      names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
-      combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                    auc.plot.all.dx1[[2]],
-                                    auc.plot.all.dx2[[2]],
-                                    auc.plot.all.dx3[[2]],
-                                    auc.plot.all.dx4[[2]],
-                                    auc.plot.all.dx5[[2]])
-      combined.auc.plot.all$title = 'Diagnosis Time'
-      
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        # facet_grid2(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-    }
+    dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6'),]
+    dx7 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','6-7'),]
+    dx8 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','7-8'),]
+    dx9 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','8-9','9+'),]
     
-    if (dx.all == T){
-      merged.df.all.tmp
-      dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6','6-7','7-8','8-9','9+'),]
-      
-      
-      auc.plot.all.dx6 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
-      auc.plot.all.dx6[[2]]$dx.time = '5+'
-      auc.plot.all.dx6[[2]]$var = '5+'
-      
-      auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
-      
-      
-      
-      auc.res2 = rbind(auc.plot.all[[2]][1,],
-                       auc.plot.all.dx1[[2]][1,],
-                       auc.plot.all.dx2[[2]][1,],
-                       auc.plot.all.dx3[[2]][1,],
-                       auc.plot.all.dx4[[2]][1,],
-                       auc.plot.all.dx5[[2]][1,],
-                       auc.plot.all.dx6[[2]][1,])
-      auc.res2$title = 'Diagnosis Time'
-      combined.auroc = rbind(combined.auroc,auc.res2)
-      
-      
-      diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
-      names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
-      combined.auc.plot.all = rbind(auc.plot.all[[2]],
-                                    auc.plot.all.dx1[[2]],
-                                    auc.plot.all.dx2[[2]],
-                                    auc.plot.all.dx3[[2]],
-                                    auc.plot.all.dx4[[2]],
-                                    auc.plot.all.dx5[[2]],
-                                    auc.plot.all.dx6[[2]])
-      combined.auc.plot.all$title = 'Diagnosis Time'
-      
-      plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        #facet_grid2(.~title)+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
-      
-      png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-      
-    } 
+    auc.plot.all.dx6 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx6[[2]]$dx.time = '5-6'
+    auc.plot.all.dx6[[2]]$var = '5-6'
     
+    auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
+    
+    auc.plot.all.dx7 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx7$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx7[[2]]$dx.time = '6-7'
+    auc.plot.all.dx7[[2]]$var = '6-7'
+    
+    auc.plot.all.dx7[[2]]$var.group = 'Time to Diagnosis'
+    
+    
+    auc.plot.all.dx8 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx8$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx8[[2]]$dx.time = '7-8'
+    auc.plot.all.dx8[[2]]$var = '7-8'
+    
+    auc.plot.all.dx8[[2]]$var.group = 'Time to Diagnosis'
+    
+    
+    auc.plot.all.dx9 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx9$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx9[[2]]$dx.time = '8-10'
+    auc.plot.all.dx9[[2]]$var = '8-10'
+    
+    auc.plot.all.dx9[[2]]$var.group = 'Time to Diagnosis'
+    
+    #
+    
+    auc.res2 = rbind(auc.plot.all[[2]][1,],
+                     auc.plot.all.dx1[[2]][1,],
+                     auc.plot.all.dx2[[2]][1,],
+                     auc.plot.all.dx3[[2]][1,],
+                     auc.plot.all.dx4[[2]][1,],
+                     auc.plot.all.dx5[[2]][1,],
+                     auc.plot.all.dx6[[2]][1,],
+                     auc.plot.all.dx7[[2]][1,],
+                     auc.plot.all.dx8[[2]][1,],
+                     auc.plot.all.dx9[[2]][1,])
+    auc.res2$title = 'Diagnosis Time'
+    combined.auroc = rbind(combined.auroc,auc.res2)
+    
+    diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
+    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
+    combined.auc.plot.all = rbind(auc.plot.all[[2]],
+                                  auc.plot.all.dx1[[2]],
+                                  auc.plot.all.dx2[[2]],
+                                  auc.plot.all.dx3[[2]],
+                                  auc.plot.all.dx4[[2]],
+                                  auc.plot.all.dx5[[2]],
+                                  auc.plot.all.dx6[[2]],
+                                  auc.plot.all.dx7[[2]],
+                                  auc.plot.all.dx8[[2]],
+                                  auc.plot.all.dx9[[2]])
+    combined.auc.plot.all$title = 'Diagnosis Time'
+    
+    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid2(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+    
+    png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
+    merged.df.all.tmp
+    dx6 = merged.df.all.tmp[merged.df.all.tmp$Diagnosis_Time %in% c('Control','5-6','6-7','7-8','8-9','9+'),]
+    
+    
+    auc.plot.all.dx6 = summary.calc.dxtime(pred.df.targ.collapse[pred.df.targ.collapse$GRP_Id %in% dx6$GRP_Id,],merged.df.all.tmp)
+    auc.plot.all.dx6[[2]]$dx.time = '5+'
+    auc.plot.all.dx6[[2]]$var = '5+'
+    
+    auc.plot.all.dx6[[2]]$var.group = 'Time to Diagnosis'
+    
+    
+    
+    auc.res2 = rbind(auc.plot.all[[2]][1,],
+                     auc.plot.all.dx1[[2]][1,],
+                     auc.plot.all.dx2[[2]][1,],
+                     auc.plot.all.dx3[[2]][1,],
+                     auc.plot.all.dx4[[2]][1,],
+                     auc.plot.all.dx5[[2]][1,],
+                     auc.plot.all.dx6[[2]][1,])
+    auc.res2$title = 'Diagnosis Time'
+    combined.auroc = rbind(combined.auroc,auc.res2)
+    
+    
+    diagnosis_time_colors1 = c('#7A797C',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D')
+    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5+')
+    combined.auc.plot.all = rbind(auc.plot.all[[2]],
+                                  auc.plot.all.dx1[[2]],
+                                  auc.plot.all.dx2[[2]],
+                                  auc.plot.all.dx3[[2]],
+                                  auc.plot.all.dx4[[2]],
+                                  auc.plot.all.dx5[[2]],
+                                  auc.plot.all.dx6[[2]])
+    combined.auc.plot.all$title = 'Diagnosis Time'
+    
+    plot1 = ggplot(combined.auc.plot.all,aes(x = fpr, y = tpr, col = dx.time)) + geom_line(linewidth=1) +
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      #facet_grid2(.~title)+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('False Positive Rate') + ylab('Sensitivity')
+    
+    png(paste0(name,'.',c,'.auroc.dxtime1.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
     
     
     #plotting auc with error bars
@@ -2093,64 +1880,37 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
     pred.df.targ.collapse.annotated = merge(pred.df.targ.collapse, merged.df.all.tmp[,c('GRP_Id','Diagnosis_Time')],by='GRP_Id')
     
     #boxplot of score
-    if (dx.all == F){
-      my_comparisons = list(c('Control','0-1'),
-                            c('Control','1-2'),
-                            c('Control','2-3'),
-                            c('Control','3-4'),
-                            c('Control','4-5'))
-      options(scipen=2)
-      pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','Control'))
-      print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-      
-      
-      plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        scale_y_continuous(limits=c(0,1.45),breaks = seq(0,1,0.25))+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-        stat_compare_means(comparisons = my_comparisons,label.y=c(1,1.1,1.2,1.3,1.4,1.5),size=3)
-      
-      
-      png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-    } else {
-      my_comparisons = list(c('Control','0-1'),
-                            c('Control','1-2'),
-                            c('Control','2-3'),
-                            c('Control','3-4'),
-                            c('Control','4-5'),
-                            c('Control','5-6'),
-                            c('Control','6-7'),
-                            c('Control','7-8'))
-      diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
-      names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
-      
-      options(scipen=2)
-      pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10','Control'))
-      print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
-      
-      plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
-        scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
-        theme_bw()+ 
-        scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
-        theme(text = element_text(size=8),
-              axis.text=element_text(size=8, face = "bold"),
-              axis.title=element_text(size=8,face="bold"),
-              legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
-        stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
-      
-      
-      png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
-      print(plot1)
-      dev.off()
-      
-    }
+    
+    my_comparisons = list(c('Control','0-1'),
+                          c('Control','1-2'),
+                          c('Control','2-3'),
+                          c('Control','3-4'),
+                          c('Control','4-5'),
+                          c('Control','5-6'),
+                          c('Control','6-7'),
+                          c('Control','7-8'))
+    diagnosis_time_colors1 = c('grey',"#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#F46197','#C3C3E6','#442B48')
+    names(diagnosis_time_colors1) = c('Control','0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10')
+    
+    options(scipen=2)
+    pred.df.targ.collapse.annotated$Diagnosis.time.ks = factor(as.character(pred.df.targ.collapse.annotated$Diagnosis_Time),levels = c('0-1','1-2','2-3','3-4','4-5','5-6','6-7','7-8','8-10','Control'))
+    print(kruskal.test(methylation_score ~ Diagnosis.time.ks,  data = pred.df.targ.collapse.annotated)  )
+    
+    plot1 = ggplot(pred.df.targ.collapse.annotated,aes(x = Diagnosis_Time, y = methylation_score, col = Diagnosis_Time)) + geom_boxplot(outlier.shape=NA)+geom_jitter(width=0.1)+
+      scale_color_manual(values = c(diagnosis_time_colors1))+ #+ ggtitle(title) +
+      theme_bw()+ 
+      scale_y_continuous(limits=c(0,1.8),breaks = seq(0,1.85,0.25))+
+      theme(text = element_text(size=8),
+            axis.text=element_text(size=8, face = "bold"),
+            axis.title=element_text(size=8,face="bold"),
+            legend.position = "none")+ guides(colour = guide_legend(override.aes = list(size=4),nrow=4)) + xlab('Time to Diagnosis (Years)') + ylab('Methylation Score') +
+      stat_compare_means(comparisons = my_comparisons,label.y=seq(1,1.85,0.1),size=3)
+    
+    
+    png(paste0(name,'.dx.methscore.',c,'.png'),height = 1100,width=1100,res = 300)
+    print(plot1)
+    dev.off()
+    
     
     
     ####plotting stage####
@@ -4054,185 +3814,181 @@ combined.info.all = readRDS('male.epican.weighting.info.RDS') #upload
       asdf
       
       #split by gleason score
-      if (gs.plot == T){
-        for (gs in c('6','7','8/9')) {
-          if (gs != '8/9') {
-            pca.coords.filt =  pca.coords[pca.coords$Gleason.score %in% c('Control',gs),]
-            male.weights.filt = male.weights[pca.coords$Gleason.score %in% c('Control',gs)]
-          } else {
-            pca.coords.filt =  pca.coords[pca.coords$Gleason.score %in% c('Control','8','9'),]
-            male.weights.filt = male.weights[pca.coords$Gleason.score %in% c('Control','8','9')]
-          }
-          
-          gs.name =gsub('\\/','',gs)
-          cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data = pca.coords.filt,weights=male.weights.filt))$logtest[3]
-          hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=male.weights.filt))$coefficients[2],digits=3)
-          median.g = pca.coords.filt$median.g
-          a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=male.weights.filt)
-          b = survfit(a,newdata=data.frame(365*seq(1:5)))
-          plot4 = ggsurvplot(
-            fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = male.weights.filt), 
-            risk.table = F,
-            #cumevents = TRUE,
-            palette = c('#2a9d8f','#e9c46a'),
-            legend.labs=c("Higher Test Median","Lower Test Median"),
-            xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-            ylim = c(0.85,1),
-            ggtheme = theme_bw(),
-            
-            font.tickslab = c(8,'bold'), 
-            font.main = c(8, "bold",'black'),
-            font.x = c(8, "bold",'black'),
-            font.y = c(8, "bold",'black'),
-            alpha = 0.6,
-            font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
-            ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
-          
-          png(paste0(name,".scores.surv_median.gs.",gs.name,'.',c,'.',s,".cut.png"),height = 1100, width = 1100,res=300)
-          print(plot4)
-          dev.off()
-          
-          plot4 = ggsurvplot(
-            fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = male.weights.filt), 
-            risk.table = F,
-            #cumevents = TRUE,
-            palette = c('#2a9d8f','#e9c46a'),
-            legend.labs=c("Higher Test Median","Lower Test Median"),
-            xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-            ylim = c(0,1),
-            ggtheme = theme_bw(),
-            
-            font.tickslab = c(8,'bold'), 
-            font.main = c(8, "bold",'black'),
-            font.x = c(8, "bold",'black'),
-            font.y = c(8, "bold",'black'),
-            
-            alpha = 0.6,
-            font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
-          
-          png(paste0(name,".scores.surv_median.gs.",gs.name,'.',c,'.',s,".all.png"),height = 1100, width = 1100,res=300)
-          print(plot4)
-          dev.off()
-          
-          
-          pca.coords.filt$quartile <- dplyr::ntile(pca.coords.filt$methylation_score, 4) 
-          quartile = pca.coords.filt$quartile 
-          cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt))$logtest[3]
-          hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=male.weights.filt))$coefficients[2],digits=3)
-          survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt)
-          quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-          names(quart.col) = c("1","2","3","4")
-          quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-          plot4 = ggsurvplot(
-            fit = survfit.obj, 
-            risk.table = F,
-            #cumevents = TRUE,
-            palette = quart.col.plot,
-            legend.labs=names(quart.col.plot),
-            xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-            ylim=c(0.70,1),
-            ggtheme = theme_bw(),
-            
-            font.tickslab = c(8,'bold'), 
-            font.main = c(8, "bold",'black'),
-            font.x = c(8, "bold",'black'),
-            font.y = c(8, "bold",'black'),
-            
-            alpha = 0.6,
-            font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-            ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-          
-          
-          png(paste0(name,".scores.surv_quart.gs.",gs.name,'.',c,'.',s,".png"),height = 1100, width = 1100,res=300)
-          print(plot4)
-          dev.off()
-          
-          
-          plot4 = ggsurvplot(
-            fit = survfit.obj, 
-            risk.table = F,
-            #cumevents = TRUE,
-            palette = quart.col.plot,
-            legend.labs=names(quart.col.plot),
-            xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-            ylim=c(0,1),
-            ggtheme = theme_bw(),
-            
-            font.tickslab = c(8,'bold'), 
-            font.main = c(8, "bold",'black'),
-            font.x = c(8, "bold",'black'),
-            font.y = c(8, "bold",'black'),
-            
-            alpha = 0.6,
-            font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-            ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-          
-          png(paste0(name,".scores.surv_quart.gs.",gs.name,'.',c,'.',s,".full.png"),height = 1100, width = 1100,res=300)
-          print(plot4)
-          dev.off()
-          
-          
-          pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
-                                        ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
-                                               ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
-                                                      ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
-          
-          quartile = pca.coords.filt$quartile 
-          cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt))$logtest[3]
-          hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=male.weights.filt))$coefficients[2],digits=3)
-          survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt)
-          quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
-          names(quart.col) = c("1","2","3","4")
-          quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
-          plot4 = ggsurvplot(
-            fit = survfit.obj, 
-            risk.table = F,
-            #cumevents = TRUE,
-            palette = quart.col.plot,
-            legend.labs=names(quart.col.plot),
-            xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
-            ylim=c(0.7,1),
-            ggtheme = theme_bw(),
-            
-            font.tickslab = c(8,'bold'), 
-            font.main = c(8, "bold",'black'),
-            font.x = c(8, "bold",'black'),
-            font.y = c(8, "bold",'black'),
-            
-            alpha = 0.6,
-            font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
-            ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
-          
-          
-          png(paste0(name,".scores.surv_quart.breaks.gs.",gs.name,'.',c,'.',s,".png"),height = 1100, width = 1100,res=300)
-          print(plot4)
-          dev.off()
-          
-          km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=male.weights.filt)
-          tmp = summary(km,times=c(1:3650))
-          km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
-          colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
-          #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
-          plot1= ggplot(km.summary.weighted.test) +
-            geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
-            
-            scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
-            scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
-            scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
-            theme_bw()+
-            theme(text = element_text(size=8),
-                  axis.text=element_text(size=8, face = "bold"),
-                  axis.title=element_text(size=8,face="bold"),
-                  legend.position = "none")+
-            #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
-            ylab('Prostate Cancer Probability (%)') + xlab('Time (Years)') 
-          png(paste0(name,".scores.weighted.risk.gs.",gs.name,'.',c,'.',s,".all.png"),height = 900, width = 1100,res=300)
-          print(plot1)
-          dev.off()
-          
-          
-          
+      for (gs in c('6','7','8/9')) {
+        if (gs != '8/9') {
+          pca.coords.filt =  pca.coords[pca.coords$Gleason.score %in% c('Control',gs),]
+          male.weights.filt = male.weights[pca.coords$Gleason.score %in% c('Control',gs)]
+        } else {
+          pca.coords.filt =  pca.coords[pca.coords$Gleason.score %in% c('Control','8','9'),]
+          male.weights.filt = male.weights[pca.coords$Gleason.score %in% c('Control','8','9')]
         }
+        
+        gs.name =gsub('\\/','',gs)
+        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data = pca.coords.filt,weights=male.weights.filt))$logtest[3]
+        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=male.weights.filt))$coefficients[2],digits=3)
+        median.g = pca.coords.filt$median.g
+        a=coxph(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=male.weights.filt)
+        b = survfit(a,newdata=data.frame(365*seq(1:5)))
+        plot4 = ggsurvplot(
+          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = male.weights.filt), 
+          risk.table = F,
+          #cumevents = TRUE,
+          palette = c('#2a9d8f','#e9c46a'),
+          legend.labs=c("Higher Test Median","Lower Test Median"),
+          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+          ylim = c(0.85,1),
+          ggtheme = theme_bw(),
+          
+          font.tickslab = c(8,'bold'), 
+          font.main = c(8, "bold",'black'),
+          font.x = c(8, "bold",'black'),
+          font.y = c(8, "bold",'black'),
+          alpha = 0.6,
+          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1) + 
+          ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2))) #+ theme(legend.position = 'none')
+        
+        png(paste0(name,".scores.surv_median.gs.",gs.name,'.',c,'.',s,".cut.png"),height = 1100, width = 1100,res=300)
+        print(plot4)
+        dev.off()
+        
+        plot4 = ggsurvplot(
+          fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  pca.coords.filt,weights = male.weights.filt), 
+          risk.table = F,
+          #cumevents = TRUE,
+          palette = c('#2a9d8f','#e9c46a'),
+          legend.labs=c("Higher Test Median","Lower Test Median"),
+          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+          ylim = c(0,1),
+          ggtheme = theme_bw(),
+          
+          font.tickslab = c(8,'bold'), 
+          font.main = c(8, "bold",'black'),
+          font.x = c(8, "bold",'black'),
+          font.y = c(8, "bold",'black'),
+          
+          alpha = 0.6,
+          font.legend = c(8), risk.table.fontsize = 8, risk.table.col = "black", size = 1) + ggtitle(paste(hr,'.',formatC(cph, format = "e", digits = 2)))   #+ theme(legend.position = 'none')
+        
+        png(paste0(name,".scores.surv_median.gs.",gs.name,'.',c,'.',s,".all.png"),height = 1100, width = 1100,res=300)
+        print(plot4)
+        dev.off()
+        
+        
+        pca.coords.filt$quartile <- dplyr::ntile(pca.coords.filt$methylation_score, 4) 
+        quartile = pca.coords.filt$quartile 
+        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt))$logtest[3]
+        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=male.weights.filt))$coefficients[2],digits=3)
+        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt)
+        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+        names(quart.col) = c("1","2","3","4")
+        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+        plot4 = ggsurvplot(
+          fit = survfit.obj, 
+          risk.table = F,
+          #cumevents = TRUE,
+          palette = quart.col.plot,
+          legend.labs=names(quart.col.plot),
+          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+          ylim=c(0.70,1),
+          ggtheme = theme_bw(),
+          
+          font.tickslab = c(8,'bold'), 
+          font.main = c(8, "bold",'black'),
+          font.x = c(8, "bold",'black'),
+          font.y = c(8, "bold",'black'),
+          
+          alpha = 0.6,
+          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+        
+        
+        png(paste0(name,".scores.surv_quart.gs.",gs.name,'.',c,'.',s,".png"),height = 1100, width = 1100,res=300)
+        print(plot4)
+        dev.off()
+        
+        
+        plot4 = ggsurvplot(
+          fit = survfit.obj, 
+          risk.table = F,
+          #cumevents = TRUE,
+          palette = quart.col.plot,
+          legend.labs=names(quart.col.plot),
+          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+          ylim=c(0,1),
+          ggtheme = theme_bw(),
+          
+          font.tickslab = c(8,'bold'), 
+          font.main = c(8, "bold",'black'),
+          font.x = c(8, "bold",'black'),
+          font.y = c(8, "bold",'black'),
+          
+          alpha = 0.6,
+          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+        
+        png(paste0(name,".scores.surv_quart.gs.",gs.name,'.',c,'.',s,".full.png"),height = 1100, width = 1100,res=300)
+        print(plot4)
+        dev.off()
+        
+        
+        pca.coords$quartile <- ifelse(pca.coords$methylation_score >=0 & pca.coords$methylation_score < 0.25, c(1),
+                                      ifelse(pca.coords$methylation_score >=0.25 & pca.coords$methylation_score < 0.5, c(2),
+                                             ifelse(pca.coords$methylation_score >=0.5 & pca.coords$methylation_score < 0.75, c(3),
+                                                    ifelse(pca.coords$methylation_score >=0.75 & pca.coords$methylation_score < 1, c(4),'Other'))))
+        
+        quartile = pca.coords.filt$quartile 
+        cph = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt))$logtest[3]
+        hr = round(summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  pca.coords.filt,weights=male.weights.filt))$coefficients[2],digits=3)
+        survfit.obj = survfit(Surv(censorship_time/365, Cancer.g) ~ quartile, data =  pca.coords.filt,weights = male.weights.filt)
+        quart.col = c('#2a9d8f','#e9c46a','#EA526F','#586994')
+        names(quart.col) = c("1","2","3","4")
+        quart.col.plot = quart.col[names(quart.col) %in%  pca.coords.filt$quartile ]
+        plot4 = ggsurvplot(
+          fit = survfit.obj, 
+          risk.table = F,
+          #cumevents = TRUE,
+          palette = quart.col.plot,
+          legend.labs=names(quart.col.plot),
+          xlim = c(0,10), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+          ylim=c(0.7,1),
+          ggtheme = theme_bw(),
+          
+          font.tickslab = c(8,'bold'), 
+          font.main = c(8, "bold",'black'),
+          font.x = c(8, "bold",'black'),
+          font.y = c(8, "bold",'black'),
+          
+          alpha = 0.6,
+          font.legend = c(8), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  + 
+          ggtitle(paste0(hr,'.',formatC(cph, format = "e", digits = 2)) )  #+ the #+ theme(legend.position = 'none')
+        
+        
+        png(paste0(name,".scores.surv_quart.breaks.gs.",gs.name,'.',c,'.',s,".png"),height = 1100, width = 1100,res=300)
+        print(plot4)
+        dev.off()
+        
+        km=survfit(formula = Surv(censorship_time, Cancer.g) ~ median.g, data =  pca.coords.filt,weights=male.weights.filt)
+        tmp = summary(km,times=c(1:3650))
+        km.summary.weighted.test = data.frame(time = tmp$time, surv.prob =tmp$surv, surv.prob.l =tmp$lower,surv.prob.h = tmp$upper,risk = gsub('risk=','',tmp$strata))
+        colnames(km.summary.weighted.test)[2:4]= c('surv','lower','upper')
+        #combined.validation.surv = rbind(km.summary.weighted.test,surv.prob.validation[,-3])
+        plot1= ggplot(km.summary.weighted.test) +
+          geom_line(aes(x = time/365, y = 100-surv*100, col = risk),size = 1,alpha= 0.7) + 
+          
+          scale_fill_manual(values = c('#B9F3EC','#FDF2C4'))+
+          scale_color_manual(values = c('#2a9d8f','#e9c46a'))+
+          scale_x_continuous(breaks = seq(0,max.time,1),limits = c(0,max.time))+
+          theme_bw()+
+          theme(text = element_text(size=8),
+                axis.text=element_text(size=8, face = "bold"),
+                axis.title=element_text(size=8,face="bold"),
+                legend.position = "none")+
+          #scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +
+          ylab('Prostate Cancer Probability (%)') + xlab('Time (Years)') 
+        png(paste0(name,".scores.weighted.risk.gs.",gs.name,'.',c,'.',s,".all.png"),height = 900, width = 1100,res=300)
+        print(plot1)
+        dev.off()
+        
         
         
       }
@@ -4434,7 +4190,7 @@ combined.performance = list(return.df.final.auroc,return.df.final.auct) #perform
 
 
 ###computing hazard ratios####
-combined.info.all = readRDS('male.ohs.weighting.info.RDS') #upload
+combined.info.all = readRDS('male.epican.weighting.info') #upload
 mean.perf.df.targ.tmp = pred.df.targ
 y.index = score.cutoff
 mean.perf.df.targ.tmp.merged = merge(mean.perf.df.targ.tmp, all.sample.info[,c('GRP_Id','censorship_time')],by='GRP_Id')
@@ -4453,9 +4209,7 @@ male.ohs.qx.weighting = function(subject,combined.info.all) {
   fh.groups = unique(combined.info.all.male$Family.history.prostate)
   alc.groups = unique(combined.info.all.male$Alch.con.group)
   smk.groups = unique(combined.info.all.male$Smoking.Frequency)
-  control.samples = subject[subject$reported == 'Control',]
-  cancer.samples = subject[subject$reported != 'Control',]
-  
+
   control.samples = combined.info.all[combined.info.all$GRP_Id %in% control.samples$GRP_Id,]
   cancer.samples = combined.info.all[combined.info.all$GRP_Id %in% cancer.samples$GRP_Id,]
   
